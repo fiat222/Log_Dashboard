@@ -1,0 +1,211 @@
+# =============================================================================
+# docker-compose.yml — Local PC Test Version
+# Simplified Log Pipeline for Windows/WSL2 Testing
+# AMD Ryzen 7 7435HS / RTX 3050 / 24 GB RAM
+# =============================================================================
+
+networks:
+  pipeline:
+    driver: bridge
+
+volumes:
+  redis_data:
+  clickhouse_data:
+  clickhouse_logs:
+  prometheus_data:
+  grafana_data:
+
+
+services:
+
+  # ── Traefik ────────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "8080:80"
+      - "8443:443"
+      - "8090:8080"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`localhost`)"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2
+    container_name: redis
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server --appendonly yes --appendfsync everysec --save 60 1000 --maxmemory 128mb --maxmemory-policy allkeys-lru --loglevel warning
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── ClickHouse ────────────────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: clickhouse
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: loguser
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    healthcheck:
+      test: [ "CMD", "clickhouse-client", "--query", "SELECT 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Filebeat ───────────────────────────────────────────────────────────────
+  # FIX: filebeat.yml from Windows has 777 permissions.
+  # Filebeat refuses config files writable by group/other (security policy).
+  # Workaround: chmod inside container before starting.
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.0
+    container_name: filebeat
+    restart: unless-stopped
+    networks: [ pipeline ]
+    user: root
+    command: >
+      bash -c "cp /tmp/filebeat.yml /usr/share/filebeat/filebeat.yml && chmod go-w /usr/share/filebeat/filebeat.yml && filebeat -e -c /usr/share/filebeat/filebeat.yml"
+    volumes:
+      - ./filebeat.yml:/tmp/filebeat.yml:ro # mount ที่ /tmp แทน
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Log Ingester ───────────────────────────────────────────────────────────
+  log-ingester:
+    image: python:3.12-slim
+    container_name: log-ingester
+    restart: unless-stopped
+    networks: [ pipeline ]
+    volumes:
+      - ./ingester/ingester.py:/app/ingester.py:ro
+      - ./ingester/requirements.txt:/app/requirements.txt:ro
+    working_dir: /app
+    command: >
+      sh -c "pip install -r requirements.txt -q && python ingester.py"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_KEY: filebeat
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: loguser
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
+      BATCH_SIZE: "200"
+      FLUSH_INTERVAL: "3"
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  # ── cAdvisor ───────────────────────────────────────────────────────────────
+  # restart: on-failure — WSL2 may be missing cgroup paths; don't block others
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: on-failure
+    networks: [ pipeline ]
+    ports:
+      - "8088:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  # FIX: GF_INSTALL_PLUGINS removed — grafana cli segfaults on WSL2 kernel 5.15.
+  # After stack is up, install plugin manually:
+  #   docker exec -it grafana grafana cli plugins install grafana-clickhouse-datasource
+  #   docker restart grafana
+  grafana:
+    image: grafana/grafana-oss:9.5.20
+    container_name: grafana
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-changeme}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - clickhouse
+      - prometheus
+
+  # ── Log Dashboard (Nginx) ──────────────────────────────────────────────────
+  # FIX: mount as nginx.conf.template instead of nginx.conf.
+  # Nginx official image auto-runs envsubst on *.template files,
+  # which correctly expands ${CLICKHOUSE_PASSWORD} before starting.
+  log-dashboard:
+    image: nginx:1.25
+    container_name: log-dashboard
+    restart: unless-stopped
+    networks: [ pipeline ]
+    ports:
+      - "80:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+      - ./dashboard/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
+    depends_on:
+      clickhouse:
+        condition: service_started

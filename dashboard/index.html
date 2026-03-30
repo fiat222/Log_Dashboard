@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Container Log Dashboard</title>
+  <meta name="description" content="Real-time Docker container log viewer for the university registration system." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ── Layout ─────────────────────────────────────────────────────── -->
+  <div id="app">
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">⬡</span>
+          <span class="logo-text">LogPipe</span>
+        </div>
+        <span class="sidebar-label">CONTAINERS</span>
+      </div>
+      <div id="container-list">
+        <div class="skeleton-item"></div>
+        <div class="skeleton-item"></div>
+        <div class="skeleton-item"></div>
+        <div class="skeleton-item"></div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main id="main">
+
+      <!-- Top metric bar -->
+      <header id="metric-bar">
+        <div class="metric-card" id="m-total">
+          <span class="metric-value">—</span>
+          <span class="metric-label">Total Logs</span>
+        </div>
+        <div class="metric-card error" id="m-errors">
+          <span class="metric-value">—</span>
+          <span class="metric-label">Errors</span>
+        </div>
+        <div class="metric-card warn" id="m-warnings">
+          <span class="metric-value">—</span>
+          <span class="metric-label">Warnings</span>
+        </div>
+        <div class="metric-card" id="m-containers">
+          <span class="metric-value">—</span>
+          <span class="metric-label">Active Containers</span>
+        </div>
+        <button id="btn-clear-db" class="btn-danger" title="Clear database">
+          🗑 Clear DB
+        </button>
+        <button id="btn-refresh" class="btn-secondary" title="Refresh data">
+          ↻ Refresh
+        </button>
+      </header>
+
+      <!-- Filter bar -->
+      <section id="filter-bar">
+        <div class="filter-group">
+          <label for="search-input">Search</label>
+          <input id="search-input" type="search" placeholder="Search messages..." autocomplete="off" />
+        </div>
+        <div class="filter-group">
+          <label for="level-select">Level</label>
+          <select id="level-select">
+            <option value="">All levels</option>
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="sort-select">Sort</label>
+          <select id="sort-select">
+            <option value="DESC">Newest first</option>
+            <option value="ASC">Oldest first</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="range-from">From</label>
+          <input id="range-from" type="datetime-local" />
+        </div>
+        <div class="filter-group">
+          <label for="range-to">To</label>
+          <input id="range-to" type="datetime-local" />
+        </div>
+        <button id="btn-apply" class="btn-primary">Apply</button>
+        <button id="btn-reset" class="btn-ghost">Reset</button>
+      </section>
+
+      <!-- Log table -->
+      <section id="table-section">
+        <div id="table-status"></div>
+        <div class="table-wrapper">
+          <table id="log-table">
+            <thead>
+              <tr>
+                <th class="col-ts">Timestamp</th>
+                <th class="col-cid">Container</th>
+                <th class="col-lvl">Level</th>
+                <th class="col-msg">Message</th>
+              </tr>
+            </thead>
+            <tbody id="log-body">
+              <tr><td colspan="4" class="empty-state">Loading logs…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- Pagination -->
+        <div id="pagination">
+          <button id="btn-prev" class="btn-ghost" disabled>← Prev</button>
+          <span id="page-info">Page 1</span>
+          <button id="btn-next" class="btn-ghost">Next →</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ── Clear DB Modal ─────────────────────────────────────────────── -->
+  <div id="modal-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal">
+      <h2 id="modal-title">⚠️ Clear Database</h2>
+      <p>This action <strong>permanently deletes</strong> logs from ClickHouse. Choose a range:</p>
+      <div class="modal-options">
+        <label><input type="radio" name="clear-range" value="7" /> Last 7 days</label>
+        <label><input type="radio" name="clear-range" value="30" /> Last 30 days</label>
+        <label><input type="radio" name="clear-range" value="90" checked /> Last 90 days</label>
+        <label><input type="radio" name="clear-range" value="all" /> All data</label>
+      </div>
+      <div class="modal-note" id="modal-query-preview"></div>
+      <div class="modal-actions">
+        <button id="btn-modal-cancel" class="btn-ghost">Cancel</button>
+        <button id="btn-modal-confirm" class="btn-danger">Confirm Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

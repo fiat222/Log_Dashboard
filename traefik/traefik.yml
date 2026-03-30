@@ -1,0 +1,78 @@
+# =============================================================================
+# traefik/traefik.yml — Minimal Traefik v3 configuration
+# Docker provider: auto-discovers services via container labels.
+# No static routing configs needed — all routing defined in docker-compose labels.
+# =============================================================================
+
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  checkNewVersion: false          # Disable version-check phone-home
+  sendAnonymousUsage: false
+
+# ── API + Dashboard ───────────────────────────────────────────────────────────
+api:
+  dashboard: true                 # Exposed at /dashboard/ (label-gated in compose)
+  insecure: false                 # Dashboard only reachable via defined router
+
+# ── Entry Points ──────────────────────────────────────────────────────────────
+entryPoints:
+  web:
+    address: ":80"
+    # Redirect all HTTP → HTTPS (uncomment when TLS is configured)
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
+
+  websecure:
+    address: ":443"
+
+  traefik-internal:
+    address: ":8080"              # Traefik dashboard port
+
+# ── Providers ─────────────────────────────────────────────────────────────────
+providers:
+  docker:
+    # Watch Docker socket for container start/stop events.
+    # No need to edit this file when adding new services.
+    endpoint: "unix:///var/run/docker.sock"
+
+    # IMPORTANT: Only expose containers with traefik.enable=true label.
+    # This prevents accidental exposure of internal services like Redis/ClickHouse.
+    exposedByDefault: false
+
+    # All containers share this network; Traefik routes to their internal IPs.
+    network: "pipeline"
+
+    # Prefix for Traefik-specific Docker labels
+    # (default "traefik" — shown here for documentation clarity)
+    # defaultRule: "Host(`{{ normalize .Name }}.internal`)"
+
+  # ── File provider: for dynamic config if needed later ─────────────────────
+  # file:
+  #   directory: /etc/traefik/dynamic/
+  #   watch: true
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log:
+  level: WARN                     # Reduce noise; use INFO for debugging
+
+accessLog:
+  # Log access to stdout so Docker captures it via Filebeat.
+  format: json
+  fields:
+    defaultMode: drop             # Drop most fields to reduce log volume
+    names:
+      StartUTC: keep
+      RequestMethod: keep
+      RequestPath: keep
+      DownstreamStatus: keep
+      Duration: keep
+      ServiceName: keep
+
+# ── TLS (stub — configure when certificates are available) ───────────────────
+# tls:
+#   certificates:
+#     - certFile: /certs/fullchain.pem
+#       keyFile: /certs/privkey.pem

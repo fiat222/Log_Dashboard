@@ -1,0 +1,78 @@
+# =============================================================================
+# prometheus.yml — Scrape cAdvisor and pipeline components every 15s
+# =============================================================================
+
+global:
+  scrape_interval: 15s          # Constraint #10: scrape every 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    environment: "production"
+    project: "university-log-pipeline"
+
+# ── Alerting ──────────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []            # Add Alertmanager address here if configured
+          # e.g. - "alertmanager:9093"
+
+# ── Rule Files ────────────────────────────────────────────────────────────────
+rule_files:
+  - /etc/prometheus/alerts.yml  # Mount this file to enable alerting rules
+
+# ── Scrape Configs ────────────────────────────────────────────────────────────
+scrape_configs:
+
+  # ── cAdvisor: container resource metrics ──────────────────────────────────
+  # Primary source for CPU/memory/network per container.
+  # Alert rule: if filebeat container disappears → fire "FilebeatDown".
+  - job_name: "cadvisor"
+    scrape_interval: 15s        # Explicit override for clarity
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          service: "cadvisor"
+    # Relabel to keep only the most useful container metric series.
+    # Without this, cAdvisor emits hundreds of metrics per container.
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: >-
+          container_(cpu_usage_seconds_total|memory_usage_bytes|
+          network_receive_bytes_total|network_transmit_bytes_total|
+          fs_reads_bytes_total|fs_writes_bytes_total|last_seen)
+        action: keep
+
+  # ── Prometheus self-scrape ─────────────────────────────────────────────────
+  - job_name: "prometheus"
+    scrape_interval: 30s        # Longer interval — meta-metrics matter less
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── Filebeat HTTP stats endpoint ───────────────────────────────────────────
+  # filebeat.yml exposes metrics on port 5066.
+  # Use to track events_published_total, pipeline queue depth.
+  - job_name: "filebeat"
+    scrape_interval: 15s
+    metrics_path: /stats
+    static_configs:
+      - targets: ["filebeat:5066"]
+        labels:
+          service: "filebeat"
+
+  # ── Redis exporter (optional but recommended) ─────────────────────────────
+  # Uncomment if you add oliver006/redis_exporter to docker-compose.yml.
+  # Provides memory usage, key count, and command rate metrics.
+  # - job_name: "redis"
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ["redis-exporter:9121"]
+
+  # ── ClickHouse metrics ────────────────────────────────────────────────────
+  # ClickHouse exposes Prometheus metrics natively on port 9363.
+  - job_name: "clickhouse"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["clickhouse:9363"]
+        labels:
+          service: "clickhouse"

@@ -1,0 +1,140 @@
+# =============================================================================
+# filebeat.yml — Collect Docker container logs via Docker socket
+# Enriches each event with container metadata labels.
+# Output: Redis list "filebeat" (RPUSH) for ClickHouse ingester to consume.
+# =============================================================================
+
+filebeat.config:
+  modules:
+    path: ${path.config}/modules.d/*.yml
+    reload.enabled: false
+
+# ── Input: Docker container logs ──────────────────────────────────────────────
+filebeat.inputs:
+  - type: container
+    # Read all running containers' stdout/stderr via Docker socket.
+    # /var/lib/docker/containers is mounted read-only in docker-compose.yml.
+    paths:
+      - "/var/lib/docker/containers/*/*.log"
+
+    # Stream filter: collect both stdout and stderr
+    stream: all
+
+    # Parse the Docker JSON log format (adds log.file.path, log.offset, etc.)
+    json.message_key: log
+    json.keys_under_root: true
+    json.add_error_key: true
+
+    # Multiline: collapse Java/Python stack traces into a single event.
+    # Adjust for your application's exception format if needed.
+    multiline.pattern: '^[[:space:]]+(at|\.{3})[[:space:]]+\b'
+    multiline.negate: false
+    multiline.match: after
+    multiline.max_lines: 50
+
+    # Add a "level" field parsed from common log prefixes.
+    # Applications should emit structured logs for best results.
+    processors:
+      - dissect:
+          tokenizer: "%{level} %{rest}"
+          field: "message"
+          target_prefix: ""
+          ignore_failure: true   # Keeps event even if dissect fails
+
+# ── Autodiscover: enrich with Docker container metadata ──────────────────────
+# This is the key section — it replaces the static "paths" input and allows
+# Filebeat to track containers as they start/stop, adding rich metadata.
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # Attach all Docker labels as fields under "docker.container.labels.*"
+      # This includes Traefik service labels, app version labels, etc.
+      hints.enabled: true
+      hints.default_config:
+        type: container
+        paths:
+          - /var/lib/docker/containers/${data.docker.container.id}/*.log
+
+# ── Processors: enrich every event ───────────────────────────────────────────
+processors:
+  # 1. Add Docker container metadata (name, image, labels) to every event.
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+      # Fields added: docker.container.id, docker.container.name,
+      #               docker.container.image.name, docker.container.labels.*
+
+  # 2. Normalize "level" field from various log formats.
+  - script:
+      lang: javascript
+      id: normalize_level
+      source: >
+        function process(event) {
+          var msg = event.Get("message") || "";
+          var lvl = event.Get("level") || "";
+          // Detect level from message prefix keywords
+          var lower = msg.toLowerCase();
+          if (!lvl) {
+            if (lower.indexOf("error") !== -1 || lower.indexOf("err") !== -1) {
+              event.Put("level", "error");
+            } else if (lower.indexOf("warn") !== -1) {
+              event.Put("level", "warn");
+            } else if (lower.indexOf("debug") !== -1) {
+              event.Put("level", "debug");
+            } else {
+              event.Put("level", "info");
+            }
+          }
+        }
+
+  # 3. Keep only the fields we need — reduces Redis payload size significantly.
+  - include_fields:
+      fields:
+        - "@timestamp"
+        - "message"
+        - "level"
+        - "stream"
+        - "docker.container.id"
+        - "docker.container.name"
+        - "docker.container.image.name"
+        - "docker.container.labels"
+        - "host.name"
+
+  # 4. Rename nested fields to flat names for easier ClickHouse mapping.
+  - rename:
+      fields:
+        - from: "docker.container.id"
+          to: "container_id"
+        - from: "docker.container.name"
+          to: "container_name"
+        - from: "docker.container.image.name"
+          to: "image_name"
+        - from: "host.name"
+          to: "host"
+      ignore_missing: true
+      fail_on_error: false
+
+# ── Output: Redis ─────────────────────────────────────────────────────────────
+output.redis:
+  hosts: ["${REDIS_HOST:redis}:${REDIS_PORT:6379}"]
+  key: "filebeat"          # RPUSH to this list; ingester BLPOPs from it
+  db: 0
+  timeout: 5
+  # Batch settings — tune for throughput vs. latency
+  bulk_max_size: 500       # Max events per RPUSH call
+  worker: 2                # Parallel Redis workers
+
+# ── Internal Queue (memory) ───────────────────────────────────────────────────
+# Decouples log read rate from Redis write rate.
+queue.mem:
+  events: 4096
+  flush.min_events: 512
+  flush.timeout: 5s
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.level: warning     # Avoid meta-log noise polluting the pipeline
+logging.to_files: false    # Let Docker capture Filebeat's own logs
+
+# ── Monitoring: expose metrics for Prometheus ─────────────────────────────────
+http.enabled: true
+http.host: "0.0.0.0"
+http.port: 5066            # Prometheus can scrape /stats endpoint here

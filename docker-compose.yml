@@ -4,6 +4,8 @@
 # AMD Ryzen 7 7435HS / RTX 3050 / 24 GB RAM
 # =============================================================================
 
+name: logdashboard
+
 networks:
   pipeline:
     driver: bridge

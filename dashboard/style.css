@@ -72,6 +72,45 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Revised small legend & header layout */
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.status-indicator-group {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 6px rgba(0,0,0,0.08);
+}
+.dot-green { background: var(--success); }
+.dot-orange { background: var(--warn); }
+.dot-red { background: var(--error); }
+.btn-add {
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 6px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.btn-add:hover { background: var(--bg-elevated); }
+
 .logo {
   display: flex;
   align-items: center;
@@ -87,7 +126,7 @@ body {
   font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  background: linear-gradient(135deg, #fff 30%, var(--accent));
+  background: linear-gradient(135deg, #7c9df0 30%, var(--accent));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -635,7 +674,7 @@ input:focus, select:focus {
   gap: 10px;
 }
 
-/* ÄÄ Tabs & Analytics ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ */
+/* ï¿½ï¿½ Tabs & Analytics ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 .view-tabs {
   display: flex;
   background: var(--bg-elevated);
@@ -699,3 +738,25 @@ input:focus, select:focus {
   width: 100%;
 }
 .btn-icon { padding: 4px !important; line-height: 1; }
+
+/* Tooltip for stack headers */
+.stack-tooltip {
+  white-space: normal;
+  line-height: 1.35;
+  font-size: 13px;
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(17,24,39,0.95), rgba(15,20,30,0.95));
+  padding: 10px 12px;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(2,6,23,0.45);
+  max-width: 300px;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* Tight layout for tooltip lists */
+.stack-tooltip div { margin: 4px 0; }
+.stack-tooltip .legend-row { display: flex; gap:12px; align-items:center; }
+.stack-tooltip .legend-dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+.stack-tooltip .legend-dot.green { background: var(--success); }
+.stack-tooltip .legend-dot.amber { background: var(--warn); }
+.stack-tooltip .legend-dot.red   { background: var(--error); }

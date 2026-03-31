@@ -18,7 +18,8 @@ const PAGE_SIZE = 12;   // Constraint: 12 rows per page
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
-  selectedContainer: null,  // null = all containers
+  selectedStack: null,      // null = all stacks/containers; name of stack when selected
+  stackContainers: [],      // array of container_ids belonging to selected stack
   search: "",
   level: "",
   sortDir: "DESC",
@@ -27,6 +28,9 @@ let state = {
   page: 0,
   totalRows: 0,
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const el = id => document.getElementById(id);
 
 // ── ClickHouse HTTP Query ─────────────────────────────────────────────────────
 /**
@@ -70,12 +74,13 @@ async function chExec(sql, authKey) {
 }
 
 // ── Build WHERE clause from current state ─────────────────────────────────────
-function buildWhere(includeContainer = true) {
+function buildWhere(includeStack = true) {
   const parts = [];
 
-  if (includeContainer && state.selectedContainer) {
-    // Safe: selectedContainer is always taken from a CH query result
-    parts.push(`container_id = '${esc(state.selectedContainer)}'`);
+  if (includeStack && state.selectedStack && state.stackContainers.length > 0) {
+    // Filter by stack's containers
+    const cids = state.stackContainers.map(cid => `'${esc(cid)}'`).join(",");
+    parts.push(`container_id IN (${cids})`);
   }
   if (state.level) {
     parts.push(`level = '${esc(state.level)}'`);
@@ -153,13 +158,17 @@ async function loadContainerList() {
         max(timestamp)                  AS last_seen,
         count()                         AS log_count,
         countIf(level = 'error')        AS error_count,
-        if(isValidJSON(labels) AND JSONExtractString(labels, 'com.docker.compose.project') != '', 
-           JSONExtractString(labels, 'com.docker.compose.project'), 
+        if(isValidJSON(labels),
+           if(JSONExtractString(labels, 'com.docker.compose.project') != '',
+              JSONExtractString(labels, 'com.docker.compose.project'),
+              if(JSONExtractString(labels, 'com_docker_compose_project') != '',
+                 JSONExtractString(labels, 'com_docker_compose_project'),
+                 'Other')),
            'Other')                     AS compose_project
       FROM container_logs
       WHERE timestamp > now() - INTERVAL 24 HOUR
       GROUP BY container_id, container_name, compose_project
-      ORDER BY last_seen DESC
+      ORDER BY compose_project ASC, last_seen DESC
       LIMIT 100
     `);
     lastSidebarRows = rows;
@@ -181,8 +190,17 @@ function renderSidebar() {
   const aliases = STORAGE.getAliases();
 
   // Special "All" item
-  const allItem = makeContainerItem(null, "All Containers", null, "", 0);
-  if (!state.selectedContainer) allItem.classList.add("active");
+  const allItem = document.createElement("div");
+  allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
+  allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Containers</span>`;
+  allItem.addEventListener("click", () => {
+    state.selectedStack = null;
+    state.stackContainers = [];
+    state.page = 0;
+    loadLogs();
+    if (state.view === "analytics") loadAnalytics();
+    renderSidebar();
+  });
   folderList.appendChild(allItem);
 
   if (!lastSidebarRows.length) return;
@@ -209,8 +227,8 @@ function renderSidebar() {
     folderDataMap[displayProject].push(itemData);
 
     // 2. Assign to any Custom Stacks it belongs to
-    for (const [stackName, cids] of Object.entries(customStacks)) {
-      if (cids.includes(cid)) {
+    for (const [stackName, containerIds] of Object.entries(customStacks)) {
+      if (containerIds.includes(cid)) {
         if (!folderDataMap[stackName]) folderDataMap[stackName] = [];
         folderDataMap[stackName].push(itemData);
       }
@@ -231,48 +249,88 @@ function renderSidebar() {
 
   sortedNames.forEach(stackName => {
     const group = document.createElement("div");
-    // Only open the "Watched" and the active container's stack by default, others closed to save DOM
-    const hasActive = folderDataMap[stackName].some(d => d.cid === state.selectedContainer);
-    const isOpen = stackName === "⭐ Watched" || hasActive;
+    // Only open the "Watched" and the active stack by default, others closed to save DOM
+    const isActive = stackName === state.selectedStack;
+    const isOpen = stackName === "⭐ Watched" || isActive;
     
-    group.className = "folder-group " + (isOpen ? "open" : "");
+    group.className = "folder-group " + (isOpen ? "open" : "") + (isActive ? " active-stack" : "");
+    
+    // Check if this is a custom stack (user-created) or compose stack
+    const isCustomStack = customStacks[stackName];
+    
+    // Generate tooltip based on stack type
+    let tooltip = "";
+    if (stackName === "⭐ Watched") {
+      tooltip = "Your favorite containers - mark them by clicking the + button";
+    } else if (isCustomStack) {
+      tooltip = "Custom stack - click to view logs from all containers in this stack";
+    } else {
+      tooltip = `Docker Compose project: ${stackName}\\nClick to view logs from all services`;
+    }
+    
     group.innerHTML = `
-      <div class="folder-header">
+      <div class="folder-header" style="cursor: pointer; display: flex; align-items: center;" aria-label="${escHtml(tooltip)}" data-tooltip="${escHtml(tooltip)}">
         <span class="folder-icon">▶</span>
         <span>${escHtml(stackName)}</span>
-        <button class="btn-ghost btn-icon action-rename" title="Rename Stack" style="margin-left:auto; display:none; font-size:10px;">✏️</button>
+        <div class="stack-actions" style="margin-left:auto; display:none; gap:4px; display:flex;">
+          <button class="btn-ghost btn-icon action-rename" title="Rename Stack" style="font-size:10px; padding:2px 4px;">✏️</button>
+          ${isCustomStack ? `<button class="btn-ghost btn-icon action-delete" title="Delete Stack" style="font-size:10px; padding:2px 4px;">🗑️</button>` : ''}
+        </div>
       </div>
       <div class="folder-children" ${isOpen ? '' : 'data-loaded="false"'} ></div>
     `;
 
     const header = group.querySelector(".folder-header");
     const childrenContainer = group.querySelector(".folder-children");
+    const stackActions = group.querySelector(".stack-actions");
 
-    // Rename logic
-    header.addEventListener("mouseenter", () => group.querySelector(".action-rename").style.display = "block");
-    header.addEventListener("mouseleave", () => group.querySelector(".action-rename").style.display = "none");
+    // Show/hide action buttons
+    header.addEventListener("mouseenter", () => {
+      if (stackActions) stackActions.style.display = "flex";
+    });
+    header.addEventListener("mouseleave", () => {
+      if (stackActions) stackActions.style.display = "none";
+    });
     
-    group.querySelector(".action-rename").addEventListener("click", (e) => {
-      e.stopPropagation();
-      const newName = prompt("Rename stack to:", stackName);
-      if (newName && newName.trim() !== "" && newName !== stackName) {
-        if (customStacks[stackName]) {
-          customStacks[newName] = customStacks[stackName];
+    // Rename logic
+    const renameBtn = group.querySelector(".action-rename");
+    if (renameBtn) {
+      renameBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const newName = prompt("Rename stack to:", stackName);
+        if (newName && newName.trim() !== "" && newName !== stackName) {
+          if (customStacks[stackName]) {
+            customStacks[newName] = customStacks[stackName];
+            delete customStacks[stackName];
+            STORAGE.saveStacks(customStacks);
+          } else {
+            // It's a compose stack, save an alias
+            const rawMatches = Object.entries(aliases).filter(([k, v]) => v === stackName);
+            if (rawMatches.length) {
+              aliases[rawMatches[0][0]] = newName; // update existing alias
+            } else {
+              aliases[stackName] = newName; // create new alias
+            }
+            STORAGE.saveAliases(aliases);
+          }
+          renderSidebar();
+        }
+      });
+    }
+    
+    // Delete logic (only for custom stacks)
+    const deleteBtn = group.querySelector(".action-delete");
+    if (deleteBtn && isCustomStack) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const confirm = window.confirm(`Delete stack "${stackName}"?\n\nContainers will remain, just removed from this stack.`);
+        if (confirm) {
           delete customStacks[stackName];
           STORAGE.saveStacks(customStacks);
-        } else {
-          // It's a compose stack, save an alias
-          const rawMatches = Object.entries(aliases).filter(([k, v]) => v === stackName);
-          if (rawMatches.length) {
-            aliases[rawMatches[0][0]] = newName; // update existing alias
-          } else {
-            aliases[stackName] = newName; // create new alias
-          }
-          STORAGE.saveAliases(aliases);
+          renderSidebar();
         }
-        renderSidebar();
-      }
-    });
+      });
+    }
 
     // Lazy load logic
     const renderItems = () => {
@@ -282,8 +340,7 @@ function renderSidebar() {
         return;
       }
       folderDataMap[stackName].forEach(data => {
-        const dItem = makeContainerItem(data.cid, data.displayName, data.dot, data.fullId, data.errorCount);
-        if (state.selectedContainer === data.cid) dItem.classList.add("active");
+        const dItem = makeContainerItem(data.cid, data.displayName, data.dot, data.fullId, data.errorCount, stackName);
         childrenContainer.appendChild(dItem);
       });
       childrenContainer.removeAttribute("data-loaded"); // Mark as loaded
@@ -291,20 +348,47 @@ function renderSidebar() {
 
     if (isOpen) renderItems();
 
-    header.addEventListener("click", () => {
-      const willOpen = !group.classList.contains("open");
-      group.classList.toggle("open");
-      if (willOpen && childrenContainer.getAttribute("data-loaded") === "false") {
-        renderItems();
+    // Expand/collapse and select on header click
+    const arrowIcon = group.querySelector(".folder-icon");
+    if (arrowIcon) {
+      arrowIcon.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const willOpen = !group.classList.contains("open");
+        group.classList.toggle("open");
+        if (willOpen && childrenContainer.getAttribute("data-loaded") === "false") {
+          renderItems();
+        }
+      });
+    }
+
+    // Select stack when clicking the header (except buttons)
+    header.addEventListener("click", (e) => {
+      // Don't select if clicking action buttons
+      if (e.target.closest(".stack-actions")) return;
+      
+      if (folderDataMap[stackName].length > 0) {
+        selectStack(stackName, folderDataMap[stackName].map(d => d.cid));
       }
+    });
+
+    // Custom tooltip interactions (richer than native title)
+    header.addEventListener('mouseenter', (e) => {
+      showStackTooltip(header, tooltip, e);
+    });
+    header.addEventListener('mousemove', (e) => {
+      showStackTooltip(header, tooltip, e);
+    });
+    header.addEventListener('mouseleave', () => {
+      hideStackTooltip();
     });
     
     folderList.appendChild(group);
   });
 }
 
-function selectContainer(cid) {
-  state.selectedContainer = cid;
+function selectStack(stackName, containerIds) {
+  state.selectedStack = stackName;
+  state.stackContainers = containerIds || [];
   state.page = 0;
   loadLogs();
   
@@ -315,7 +399,7 @@ function selectContainer(cid) {
   renderSidebar(); // updates active class
 }
 
-function makeContainerItem(cid, name, dotClass, fullId, errorCount) {
+function makeContainerItem(cid, name, dotClass, fullId, errorCount, parentStack) {
   const div = document.createElement("div");
   div.className = "container-item";
   div.innerHTML = `
@@ -324,25 +408,102 @@ function makeContainerItem(cid, name, dotClass, fullId, errorCount) {
     ${errorCount > 0 ? `<span class="c-badge">${fmt(errorCount)}</span>` : ""}
     ${cid ? `<span class="c-star" title="Add to Stack">➕</span>` : ""}
   `;
-  div.addEventListener("click", () => selectContainer(cid));
+  div.addEventListener("click", () => {
+    // When clicking a container item, select its parent stack
+    if (parentStack && folderDataMap[parentStack]) {
+      const containerIds = folderDataMap[parentStack].map(d => d.cid);
+      selectStack(parentStack, containerIds);
+    }
+  });
 
   const addBtn = div.querySelector(".c-star");
   if (addBtn) {
     addBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const stacks = STORAGE.getStacks();
-      const stackNames = Object.keys(stacks);
-      const target = prompt(`Add to which stack?\nAvailable: ${stackNames.join(", ")}`, "⭐ Watched");
-      if (target && target.trim() !== "") {
-        if (!stacks[target]) stacks[target] = [];
-        if (!stacks[target].includes(cid)) stacks[target].push(cid);
-        STORAGE.saveStacks(stacks);
-        renderSidebar();
-      }
+      openAddToStackModal(cid, name);
     });
   }
 
   return div;
+}
+
+// ── Add to Stack Modal ─────────────────────────────────────────────────────────
+function openAddToStackModal(containerId, containerName) {
+  const stacks = STORAGE.getStacks();
+  const stackNames = Object.keys(stacks);
+  
+  // Create dynamic modal HTML
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.id = "add-stack-modal-overlay";
+  modal.innerHTML = `
+    <div class="modal" style="width: 400px;">
+      <h2>Add to Stack</h2>
+      <p>Select a stack for <strong>${escHtml(containerName)}</strong></p>
+      
+      <div style="margin: 20px 0;">
+        <input type="text" id="stack-search" placeholder="Search stacks..." 
+               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+      </div>
+      
+      <div id="stack-options" style="max-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px;">
+        ${stackNames.map(stackName => {
+          const description = stackName === "⭐ Watched" 
+            ? "Your favorite containers" 
+            : "Custom stack for organizing logs";
+          return `
+            <div class="stack-option" data-stack="${escHtml(stackName)}" 
+                 style="padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; hover: background: #f5f5f5;">
+              <div style="font-weight: 500;">${escHtml(stackName)}</div>
+              <div style="font-size: 12px; color: #666;">${description}</div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      
+      <div class="modal-actions" style="margin-top: 20px;">
+        <button id="stack-modal-cancel" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  const cancelBtn = modal.querySelector("#stack-modal-cancel");
+  const searchInput = modal.querySelector("#stack-search");
+  const stackOptions = modal.querySelectorAll(".stack-option");
+  
+  // Search functionality
+  searchInput.addEventListener("input", (e) => {
+    const query = e.target.value.toLowerCase();
+    stackOptions.forEach(option => {
+      const stackName = option.getAttribute("data-stack").toLowerCase();
+      option.style.display = stackName.includes(query) ? "block" : "none";
+    });
+  });
+  
+  // Stack selection
+  stackOptions.forEach(option => {
+    option.addEventListener("click", () => {
+      const stackName = option.getAttribute("data-stack");
+      const stacks = STORAGE.getStacks();
+      if (!stacks[stackName]) stacks[stackName] = [];
+      if (!stacks[stackName].includes(containerId)) {
+        stacks[stackName].push(containerId);
+        STORAGE.saveStacks(stacks);
+        renderSidebar();
+      }
+      modal.remove();
+    });
+  });
+  
+  // Close modal
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.remove();
+  });
+  
+  cancelBtn.addEventListener("click", () => modal.remove());
+  searchInput.focus();
 }
 
 // ── Dashboard Modes & Events ──────────────────────────────────────────────────
@@ -383,7 +544,9 @@ async function loadAnalytics() {
     return;
   }
   
-  const cidFilter = state.selectedContainer ? `AND container_id = '${esc(state.selectedContainer)}'` : "";
+  const cidFilter = state.selectedStack && state.stackContainers.length > 0 
+    ? `AND container_id IN (${state.stackContainers.map(c => `'${esc(c)}'`).join(",")})`
+    : "";
 
   try {
     // 1. Volume Chart (Hourly)
@@ -635,9 +798,7 @@ async function executeClear() {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const el = id => document.getElementById(id);
-
+// ── Additional Helpers ────────────────────────────────────────────────────────
 function fmt(n) {
   const num = parseInt(n, 10);
   if (isNaN(num)) return "—";
@@ -660,6 +821,51 @@ function escHtml(s) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Tooltip helpers for richer, multi-line tooltips on stack headers
+function _ensureStackTooltip() {
+  if (window._stackTooltip) return window._stackTooltip;
+  const t = document.createElement('div');
+  t.className = 'stack-tooltip';
+  t.setAttribute('role', 'tooltip');
+  t.style.position = 'fixed';
+  t.style.zIndex = 1200;
+  t.style.padding = '8px 10px';
+  t.style.background = 'rgba(15,23,42,0.95)';
+  t.style.color = '#fff';
+  t.style.borderRadius = '6px';
+  t.style.fontSize = '12px';
+  t.style.maxWidth = '320px';
+  t.style.boxShadow = '0 6px 18px rgba(2,6,23,0.45)';
+  t.style.display = 'none';
+  t.style.pointerEvents = 'none';
+  document.body.appendChild(t);
+  window._stackTooltip = t;
+  return t;
+}
+
+function showStackTooltip(targetEl, text, evt, isHtml = false) {
+  try {
+    const t = _ensureStackTooltip();
+    if (isHtml) t.innerHTML = text; else t.textContent = text;
+    t.style.display = 'block';
+    // Position near mouse if available, otherwise below the element
+    const x = evt && evt.clientX ? evt.clientX + 12 : (targetEl.getBoundingClientRect().left + 8);
+    const y = evt && evt.clientY ? evt.clientY + 12 : (targetEl.getBoundingClientRect().bottom + 6);
+    let left = x;
+    let top = y;
+    // Keep on-screen
+    const rect = t.getBoundingClientRect();
+    if (left + rect.width > window.innerWidth - 8) left = window.innerWidth - rect.width - 8;
+    if (top + rect.height > window.innerHeight - 8) top = targetEl.getBoundingClientRect().top - rect.height - 8;
+    t.style.left = Math.max(8, left) + 'px';
+    t.style.top = Math.max(8, top) + 'px';
+  } catch (e) { /* ignore */ }
+}
+
+function hideStackTooltip() {
+  if (!window._stackTooltip) return;
+  window._stackTooltip.style.display = 'none';
+}
 // ── Event Wiring ──────────────────────────────────────────────────────────────
 function init() {
   // Filters
@@ -708,6 +914,38 @@ function init() {
   el("modal-overlay").addEventListener("click", e => {
     if (e.target === el("modal-overlay")) closeClearModal();
   });
+
+  // Sidebar 'STACKS' info icon rich tooltip
+  const infoIcon = document.querySelector('.sidebar-legend .info-icon');
+  if (infoIcon) {
+    const infoText = `
+      <div style="margin-bottom:6px;font-weight:600;">Dot Color Legend:</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+        <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot green" style="width:10px;height:10px;"></span><span>&lt; 1m (Active)</span></span>
+        <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot amber" style="width:10px;height:10px;"></span><span>&lt; 5m (Recent)</span></span>
+        <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot red" style="width:10px;height:10px;"></span><span>&gt; 5m (Inactive)</span></span>
+      </div>
+      <div style="font-weight:600;margin-bottom:4px;">Stacks:</div>
+      <div style="line-height:1.3;">
+        <div>⭐ Watched: your starred containers</div>
+        <div>Compose projects: detected from Docker labels</div>
+        <div>Custom stacks: user-created groups</div>
+      </div>
+    `;
+    // Remove any native title on the parent .sidebar-legend to avoid double tooltips
+    const legend = infoIcon.closest('.sidebar-legend');
+    if (legend && legend.hasAttribute('title')) {
+      // preserve accessible name via aria-label
+      legend.setAttribute('aria-label', legend.getAttribute('title'));
+      legend.removeAttribute('title');
+    }
+    // Also clear native title on the icon itself
+    infoIcon.removeAttribute('title');
+
+    infoIcon.addEventListener('mouseenter', (e) => showStackTooltip(infoIcon, infoText, e, true));
+    infoIcon.addEventListener('mousemove', (e) => showStackTooltip(infoIcon, infoText, e, true));
+    infoIcon.addEventListener('mouseleave', () => hideStackTooltip());
+  }
 
   // Initial load
   refresh();

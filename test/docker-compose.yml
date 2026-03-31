@@ -4,6 +4,8 @@ services:
   fake-python-app:
     image: python:3.12-slim
     container_name: fake-python-app
+    labels:
+      - "com.docker.compose.project=test"
     command:
       - python
       - -c
@@ -24,6 +26,8 @@ services:
   fake-node-app:
     image: node:20-slim
     container_name: fake-node-app
+    labels:
+      - "com.docker.compose.project=test"
     command:
       - node
       - -e

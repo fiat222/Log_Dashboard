@@ -25,10 +25,24 @@ processors:
   # 1. Add Docker container metadata (name, image, labels) to every event.
   - add_docker_metadata:
       host: "unix:///var/run/docker.sock"
+      match_fields: ["host.name"]
       # Fields added: docker.container.id, docker.container.name,
       #               docker.container.image.name, docker.container.labels.*
 
-  # 2. Normalize "level" field from various log formats.
+  # 2. Extract and serialize Docker labels as JSON
+  - script:
+      lang: javascript
+      id: extract_labels
+      source: >
+        function process(event) {
+          var dockerLabels = event.Get("docker.container.labels");
+          if (dockerLabels && typeof dockerLabels === 'object') {
+            // Serialize labels object to JSON string
+            event.Put("docker.container.labels", JSON.stringify(dockerLabels));
+          }
+        }
+
+  # 3. Normalize "level" field from various log formats.
   - script:
       lang: javascript
       id: normalize_level
@@ -60,6 +74,8 @@ processors:
           to: "container_name"
         - from: "docker.container.image.name"
           to: "image_name"
+        - from: "docker.container.labels"
+          to: "labels"
         - from: "host.name"
           to: "host"
       ignore_missing: true

@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  fake-python-app:
+    image: python:3.12-slim
+    container_name: fake-python-app
+    command:
+      - python
+      - -c
+      - |
+        import time, random
+        messages = [
+          '[INFO] Server started on port 8000',
+          '[INFO] Request received GET /api/data',
+          '[WARN] Response time slow 850ms',
+          '[ERROR] Unhandled exception NullPointerError',
+          '[DEBUG] Cache miss key=user:1234',
+        ]
+        while True:
+            print(random.choice(messages), flush=True)
+            time.sleep(random.randint(1,4))
+    restart: unless-stopped
+
+  fake-node-app:
+    image: node:20-slim
+    container_name: fake-node-app
+    command:
+      - node
+      - -e
+      - |
+        const msgs = [
+          '[INFO] Express server listening on 3000',
+          '[INFO] DB query executed in 23ms',
+          '[WARN] JWT token expiring soon',
+          '[ERROR] Failed to connect to Redis ECONNREFUSED',
+        ];
+        setInterval(() => {
+          console.log(msgs[Math.floor(Math.random()*msgs.length)]);
+        }, Math.random()*3000+1000);
+    restart: unless-stopped

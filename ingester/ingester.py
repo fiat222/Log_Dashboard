@@ -46,6 +46,17 @@ COLUMNS = [
 ]
 
 
+def _str(val, default: str = "unknown", key: str = "name") -> str:
+    """Safely convert any field value to a flat string.
+    Handles: None → default, dict → dict[key] or str(dict), anything else → str().
+    """
+    if val is None:
+        return default
+    if isinstance(val, dict):
+        return str(val.get(key) or val.get("id") or default)
+    return str(val)
+
+
 def parse_event(raw: bytes) -> list | None:
     """Parse a Filebeat JSON event into a ClickHouse row tuple."""
     try:
@@ -56,16 +67,21 @@ def parse_event(raw: bytes) -> list | None:
         except Exception:
             ts = datetime.now(timezone.utc)
 
+        # Support renamed flat fields, original nested docker.container.*, and ECS container.* paths
+        docker_meta = ev.get("docker", {}).get("container", {})
+        ecs_meta    = ev.get("container", {})
+        host_raw    = ev.get("host") or ev.get("host.name") or "unknown"
+
         return [
             ts,
-            ev.get("container_id",   "unknown")[:64],
-            ev.get("container_name", "unknown")[:128],
-            ev.get("image_name",     "unknown")[:256],
-            ev.get("level",          "info")[:16],
-            ev.get("stream",         "stdout")[:8],
-            ev.get("host",           "unknown")[:128],
-            ev.get("message",        "")[:65536],
-            json.dumps(ev.get("labels") or ev.get("docker", {}).get("container", {}).get("labels", {})),
+            _str(ev.get("container_id") or ecs_meta.get("id") or docker_meta.get("id"),   default="unknown")[:64],
+            _str(ev.get("container_name") or ecs_meta.get("name") or docker_meta.get("name"), default="unknown")[:128],
+            _str(ev.get("image_name") or ecs_meta.get("image", {}).get("name") or docker_meta.get("image", {}).get("name"), default="unknown")[:256],
+            _str(ev.get("level"),   default="info")[:16],
+            _str(ev.get("stream"),  default="stdout")[:8],
+            _str(host_raw,          default="unknown")[:128],
+            _str(ev.get("message"), default="")[:65536],
+            json.dumps(ev.get("labels") or ecs_meta.get("labels") or docker_meta.get("labels", {})),
         ]
     except Exception as exc:
         log.warning("Failed to parse event: %s | raw: %s", exc, raw[:200])

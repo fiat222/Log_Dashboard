@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <script src="chart.umd.js"></script>
 </head>
 <body>
   <!-- ── Layout ─────────────────────────────────────────────────────── -->
@@ -17,25 +18,37 @@
     <aside id="sidebar">
       <div class="sidebar-header">
         <div class="logo">
-          <span class="logo-icon">⬡</span>
-          <span class="logo-text">LogPipe</span>
+          <span class="logo-text">Log Dashboard</span>
         </div>
-        <span class="sidebar-label">CONTAINERS</span>
+        <div class="sidebar-legend" title="Dot Color Legend:
+🟢 < 1m (Active)
+🟠 < 5m (Recent)
+🔴 > 5m (Inactive)">
+          <span class="sidebar-label">STACKS</span>
+          <span class="info-icon">ℹ️</span>
+          <button id="btn-new-stack" class="btn-ghost btn-icon" style="margin-left: auto; padding: 2px 6px; font-size: 16px;" title="Create New Stack">+</button>
+        </div>
       </div>
-      <div id="container-list">
-        <div class="skeleton-item"></div>
-        <div class="skeleton-item"></div>
-        <div class="skeleton-item"></div>
-        <div class="skeleton-item"></div>
+      <div class="sidebar-scroll">
+        <div id="folder-list">
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+          <div class="skeleton-item"></div>
+        </div>
       </div>
     </aside>
 
     <!-- Main content -->
     <main id="main">
 
-      <!-- Top metric bar -->
+      <!-- Top metric bar & Tabs -->
       <header id="metric-bar">
-        <div class="metric-card" id="m-total">
+        <div class="view-tabs">
+          <button id="tab-logs" class="tab-btn active">📄 Logs</button>
+          <button id="tab-analytics" class="tab-btn">📊 Analytics</button>
+        </div>
+        
+        <div class="metric-card" id="m-total" style="margin-left: auto;">
           <span class="metric-value">—</span>
           <span class="metric-label">Total Logs</span>
         </div>
@@ -51,7 +64,8 @@
           <span class="metric-value">—</span>
           <span class="metric-label">Active Containers</span>
         </div>
-        <button id="btn-clear-db" class="btn-danger" title="Clear database">
+
+        <button id="btn-clear-db" class="btn-danger" title="Clear database" style="margin-left:10px;">
           🗑 Clear DB
         </button>
         <button id="btn-refresh" class="btn-secondary" title="Refresh data">
@@ -59,66 +73,83 @@
         </button>
       </header>
 
-      <!-- Filter bar -->
-      <section id="filter-bar">
-        <div class="filter-group">
-          <label for="search-input">Search</label>
-          <input id="search-input" type="search" placeholder="Search messages..." autocomplete="off" />
+      <!-- Analytics View (Hidden by default) -->
+      <section id="analytics-section" class="hidden">
+        <div class="analytics-grid">
+          <div class="chart-card wide">
+            <h3>Log Volume Over Time</h3>
+            <div class="chart-wrapper"><canvas id="chart-volume"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Log Severity Distribution</h3>
+            <div class="chart-wrapper"><canvas id="chart-severity"></canvas></div>
+          </div>
         </div>
-        <div class="filter-group">
-          <label for="level-select">Level</label>
-          <select id="level-select">
-            <option value="">All levels</option>
-            <option value="error">Error</option>
-            <option value="warn">Warn</option>
-            <option value="info">Info</option>
-            <option value="debug">Debug</option>
-          </select>
-        </div>
-        <div class="filter-group">
-          <label for="sort-select">Sort</label>
-          <select id="sort-select">
-            <option value="DESC">Newest first</option>
-            <option value="ASC">Oldest first</option>
-          </select>
-        </div>
-        <div class="filter-group">
-          <label for="range-from">From</label>
-          <input id="range-from" type="datetime-local" />
-        </div>
-        <div class="filter-group">
-          <label for="range-to">To</label>
-          <input id="range-to" type="datetime-local" />
-        </div>
-        <button id="btn-apply" class="btn-primary">Apply</button>
-        <button id="btn-reset" class="btn-ghost">Reset</button>
       </section>
 
-      <!-- Log table -->
-      <section id="table-section">
-        <div id="table-status"></div>
-        <div class="table-wrapper">
-          <table id="log-table">
-            <thead>
-              <tr>
-                <th class="col-ts">Timestamp</th>
-                <th class="col-cid">Container</th>
-                <th class="col-lvl">Level</th>
-                <th class="col-msg">Message</th>
-              </tr>
-            </thead>
-            <tbody id="log-body">
-              <tr><td colspan="4" class="empty-state">Loading logs…</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <!-- Pagination -->
-        <div id="pagination">
-          <button id="btn-prev" class="btn-ghost" disabled>← Prev</button>
-          <span id="page-info">Page 1</span>
-          <button id="btn-next" class="btn-ghost">Next →</button>
-        </div>
-      </section>
+      <!-- Logs View -->
+      <div id="logs-view-wrapper" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+        <!-- Filter bar -->
+        <section id="filter-bar">
+          <div class="filter-group">
+            <label for="search-input">Search</label>
+            <input id="search-input" type="search" placeholder="Search messages..." autocomplete="off" />
+          </div>
+          <div class="filter-group">
+            <label for="level-select">Level</label>
+            <select id="level-select">
+              <option value="">All levels</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="sort-select">Sort</label>
+            <select id="sort-select">
+              <option value="DESC">Newest first</option>
+              <option value="ASC">Oldest first</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="range-from">From</label>
+            <input id="range-from" type="datetime-local" />
+          </div>
+          <div class="filter-group">
+            <label for="range-to">To</label>
+            <input id="range-to" type="datetime-local" />
+          </div>
+          <button id="btn-apply" class="btn-primary">Apply</button>
+          <button id="btn-reset" class="btn-ghost">Reset</button>
+        </section>
+
+        <!-- Log table -->
+        <section id="table-section">
+          <div id="table-status"></div>
+          <div class="table-wrapper">
+            <table id="log-table">
+              <thead>
+                <tr>
+                  <th class="col-ts">Timestamp</th>
+                  <th class="col-cid">Container</th>
+                  <th class="col-lvl">Level</th>
+                  <th class="col-msg">Message</th>
+                </tr>
+              </thead>
+              <tbody id="log-body">
+                <tr><td colspan="4" class="empty-state">Loading logs…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- Pagination -->
+          <div id="pagination">
+            <button id="btn-prev" class="btn-ghost" disabled>← Prev</button>
+            <span id="page-info">Page 1</span>
+            <button id="btn-next" class="btn-ghost">Next →</button>
+          </div>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -134,6 +165,13 @@
         <label><input type="radio" name="clear-range" value="all" /> All data</label>
       </div>
       <div class="modal-note" id="modal-query-preview"></div>
+
+      <div class="modal-auth">
+        <label for="admin-password">Admin Password <span class="auth-hint">(From .env CLICKHOUSE_PASSWORD)</span></label>
+        <input type="password" id="admin-password" placeholder="Enter password to authorize..." autocomplete="off">
+        <div id="modal-error" class="error-msg hidden"></div>
+      </div>
+
       <div class="modal-actions">
         <button id="btn-modal-cancel" class="btn-ghost">Cancel</button>
         <button id="btn-modal-confirm" class="btn-danger">Confirm Delete</button>

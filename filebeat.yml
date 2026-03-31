@@ -9,51 +9,16 @@ filebeat.config:
     path: ${path.config}/modules.d/*.yml
     reload.enabled: false
 
-# ── Input: Docker container logs ──────────────────────────────────────────────
+# ── Input: Docker container logs ─────────────────────────────────────────────
+# "type: container" reads Docker's JSON log format automatically.
+# Do NOT add json.message_key here — that causes double-parse errors
+# when app logs are plain text (not JSON).
 filebeat.inputs:
   - type: container
-    # Read all running containers' stdout/stderr via Docker socket.
-    # /var/lib/docker/containers is mounted read-only in docker-compose.yml.
     paths:
       - "/var/lib/docker/containers/*/*.log"
-
-    # Stream filter: collect both stdout and stderr
     stream: all
 
-    # Parse the Docker JSON log format (adds log.file.path, log.offset, etc.)
-    json.message_key: log
-    json.keys_under_root: true
-    json.add_error_key: true
-
-    # Multiline: collapse Java/Python stack traces into a single event.
-    # Adjust for your application's exception format if needed.
-    multiline.pattern: '^[[:space:]]+(at|\.{3})[[:space:]]+\b'
-    multiline.negate: false
-    multiline.match: after
-    multiline.max_lines: 50
-
-    # Add a "level" field parsed from common log prefixes.
-    # Applications should emit structured logs for best results.
-    processors:
-      - dissect:
-          tokenizer: "%{level} %{rest}"
-          field: "message"
-          target_prefix: ""
-          ignore_failure: true   # Keeps event even if dissect fails
-
-# ── Autodiscover: enrich with Docker container metadata ──────────────────────
-# This is the key section — it replaces the static "paths" input and allows
-# Filebeat to track containers as they start/stop, adding rich metadata.
-filebeat.autodiscover:
-  providers:
-    - type: docker
-      # Attach all Docker labels as fields under "docker.container.labels.*"
-      # This includes Traefik service labels, app version labels, etc.
-      hints.enabled: true
-      hints.default_config:
-        type: container
-        paths:
-          - /var/lib/docker/containers/${data.docker.container.id}/*.log
 
 # ── Processors: enrich every event ───────────────────────────────────────────
 processors:
@@ -86,20 +51,7 @@ processors:
           }
         }
 
-  # 3. Keep only the fields we need — reduces Redis payload size significantly.
-  - include_fields:
-      fields:
-        - "@timestamp"
-        - "message"
-        - "level"
-        - "stream"
-        - "docker.container.id"
-        - "docker.container.name"
-        - "docker.container.image.name"
-        - "docker.container.labels"
-        - "host.name"
 
-  # 4. Rename nested fields to flat names for easier ClickHouse mapping.
   - rename:
       fields:
         - from: "docker.container.id"
@@ -131,7 +83,7 @@ queue.mem:
   flush.timeout: 5s
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-logging.level: warning     # Avoid meta-log noise polluting the pipeline
+logging.level: warning     # Reduce noise; change to info to debug pipeline issues
 logging.to_files: false    # Let Docker capture Filebeat's own logs
 
 # ── Monitoring: expose metrics for Prometheus ─────────────────────────────────

@@ -107,16 +107,10 @@ services:
 
   # ── Log Ingester ───────────────────────────────────────────────────────────
   log-ingester:
-    image: python:3.12-slim
+    build: ./ingester
     container_name: log-ingester
     restart: unless-stopped
     networks: [ pipeline ]
-    volumes:
-      - ./ingester/ingester.py:/app/ingester.py:ro
-      - ./ingester/requirements.txt:/app/requirements.txt:ro
-    working_dir: /app
-    command: >
-      sh -c "pip install -r requirements.txt -q && python ingester.py"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"

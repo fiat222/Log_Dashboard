@@ -381,16 +381,16 @@
     </div>
 
     <!-- PSU SSO Button -->
-    <a id="btn-sso" class="btn-sso" href="/log/auth/sso">
+    <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
       <span class="psu-icon">🎓</span>
       Sign in with PSU Passport
     </a>
 
     <div class="divider">
-      <span class="divider-text">หรือเข้าสู่ระบบด้วยบัญชีผู้ดูแลระบบ (Admin)</span>
+      <span class="divider-text">หรือเข้าสู่ระบบด้วยบัญชีผู้ใช้ (Username/Password)</span>
     </div>
 
-    <!-- Admin form -->
+    <!-- User/Admin form -->
     <form class="admin-form" id="admin-form">
       <div class="error-banner" id="error-msg"></div>
       <div class="form-group">
@@ -433,14 +433,14 @@
       errEl.classList.remove("show");
 
       try {
-        const res = await fetch("/log/api/auth/login", {
+        const res = await fetch("/logstore/api/auth/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username, password }),
           credentials: "include"
         });
         if (res.ok) {
-          window.location.href = "/log/";
+          window.location.href = "/logstore/";
         } else {
           const data = await res.json().catch(() => ({}));
           errEl.textContent = data.detail || "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง";

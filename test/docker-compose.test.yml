@@ -1,0 +1,25 @@
+services:
+  mooc-course:
+    image: registry.in.psu.ac.th/6510210495/psu-mooc-course:0.2.6
+    container_name: mooc-course
+    command: ["sh", "-c", "while true; do echo 'INFO: MOOC Course service running'; sleep 15; done"]
+  
+  selection-backend:
+    image: registry.in.psu.ac.th/6510210495/selection/backend:1.2.3
+    container_name: selection-backend
+    command: ["sh", "-c", "while true; do echo 'INFO: Selection Backend processing'; sleep 15; done"]
+
+  selection-frontend:
+    image: registry.in.psu.ac.th/6510210495/selection/frontend:1.2.3
+    container_name: selection-frontend
+    command: ["sh", "-c", "while true; do echo 'INFO: Selection Frontend UI interaction'; sleep 15; done"]
+
+  eila-backend:
+    image: registry.in.psu.ac.th/6710210419/tpsf_eila:backend-1.2
+    container_name: eila-backend
+    command: ["sh", "-c", "while true; do echo 'INFO: TPSF EILA Backend version 1.2'; sleep 15; done"]
+
+  eila-frontend:
+    image: registry.in.psu.ac.th/6710210419/tpsf_eila:frontend-1.2
+    container_name: eila-frontend
+    command: ["sh", "-c", "while true; do echo 'INFO: TPSF EILA Frontend version 1.2'; sleep 15; done"]

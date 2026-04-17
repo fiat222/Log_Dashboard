@@ -32,6 +32,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+import redis.asyncio as redis_async
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -39,7 +40,7 @@ from sqlalchemy.orm import sessionmaker
 # ── Config ────────────────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-very-long-secret-key-here")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24
+ACCESS_TOKEN_EXPIRE_HOURS = 2  # Reduced from 24 to 2 for better security
 
 # Super admin credentials (from .env)
 SUPER_ADMIN_USERNAME = os.getenv("SUPER_ADMIN_USERNAME", "superadmin")
@@ -63,10 +64,10 @@ CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "changeme")
 AUTHENTIK_BASE_URL     = os.getenv("AUTHENTIK_BASE_URL", "https://sso.psu.ac.th")
 AUTHENTIK_CLIENT_ID    = os.getenv("AUTHENTIK_CLIENT_ID", "")
 AUTHENTIK_CLIENT_SECRET= os.getenv("AUTHENTIK_CLIENT_SECRET", "")
-AUTHENTIK_REDIRECT_URI = os.getenv("AUTHENTIK_REDIRECT_URI", "https://monitor-eila.psu.ac.th/log/auth/callback")
+AUTHENTIK_REDIRECT_URI = os.getenv("AUTHENTIK_REDIRECT_URI", "https://monitor-eila.psu.ac.th/logstore/auth/callback")
 
-# App base path (for reverse proxy with /log prefix)
-APP_BASE = os.getenv("APP_BASE_PATH", "/log")
+# App base path (for reverse proxy with /logstore prefix)
+APP_BASE = os.getenv("APP_BASE_PATH", "/logstore")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [backend] %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -121,10 +122,10 @@ INIT_STMTS = [
     """,
     """
     CREATE TABLE IF NOT EXISTS container_ownership (
-        container_id VARCHAR NOT NULL,
+        container_name VARCHAR(255),
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        PRIMARY KEY (container_id, user_id)
-    )
+        PRIMARY KEY (container_name, user_id)
+    );
     """,
     """
     CREATE TABLE IF NOT EXISTS settings (
@@ -201,18 +202,34 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-# ── Notification SSE ──────────────────────────────────────────────────────────
+# ── Notification SSE & Webhook ────────────────────────────────────────────────
 # In-memory queue for SSE broadcast
 _notification_queues: list[asyncio.Queue] = []
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+
+
+async def send_webhook(notif: dict):
+    if not WEBHOOK_URL:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {
+                "text": f"*{notif['title']}*\nContainer: {notif.get('container_name', notif.get('container_id'))}\nReason: {notif['message']}"
+            }
+            await client.post(WEBHOOK_URL, json=payload, timeout=5.0)
+    except Exception as e:
+        log.warning("Failed to send webhook: %s", e)
 
 
 async def broadcast_notification(notif: dict):
-    """Push a notification to all connected SSE clients."""
+    """Push a notification to all connected SSE clients and optionally trigger Webhook."""
     for q in list(_notification_queues):
         try:
             q.put_nowait(notif)
         except asyncio.QueueFull:
             pass
+    if WEBHOOK_URL:
+        asyncio.create_task(send_webhook(notif))
 
 
 # ── Critical Pattern Checker (background task) ────────────────────────────────
@@ -298,15 +315,18 @@ async def check_critical_logs():
         log.debug("check_critical_logs error: %s", e)
 
 async def check_log_spam_anomalies():
-    """Detect if identical or very similar logs (e.g., same IP) are spammed."""
+    """Detect if logs are spammed (High Requests/sec for a single pattern)."""
     try:
-        # ลบตัวเลข (เช่น เวลา, สถิติ) ออกจาก message เพื่อจัดกลุ่ม log ที่คล้ายกัน
+        # Group by the first 30 chars of a cleaned message to capture the pattern.
+        # Calculate req_per_sec based on a 1-minute (60 seconds) window.
         sql = (
-            "SELECT container_id, max(message) as sample_msg, count() as cnt "
+            "SELECT container_id, max(message) as sample_msg, count() as cnt, "
+            "floor(count() / 60) as req_per_sec, "
+            "substr(replaceRegexpAll(message, '[0-9\\:\\\.\\+\\-]+', ''), 1, 30) as grp "
             "FROM logs.container_logs "
             "WHERE timestamp > now() - INTERVAL 1 MINUTE "
-            "GROUP BY container_id, replaceRegexpAll(message, '[0-9\:\.\+\-]+', '') "
-            "HAVING cnt > 50 " 
+            "GROUP BY container_id, grp "
+            "HAVING req_per_sec > 50 "
             "ORDER BY cnt DESC "
             "FORMAT JSONCompact"
         )
@@ -315,22 +335,25 @@ async def check_log_spam_anomalies():
             async with session.get(url, params={"query": sql},
                                    headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
                                    timeout=10) as resp:
-                if resp.status != 200: return
+                if resp.status != 200:
+                    log.debug("Spam check ClickHouse responded %s", resp.status)
+                    return
                 body = await resp.json(content_type=None)
                 rows = body.get("data", [])
+        log.debug("check_log_spam_anomalies found %d candidate groups", len(rows))
 
         async with AsyncSessionLocal() as db:
             for row in rows:
-                cid, sample_msg, count = row[0], row[1], row[2]
-                notif_key = f"spam_{cid}_{count}" 
+                cid, sample_msg, count, req_sec, grp = row[0], row[1], row[2], row[3], row[4]
+                notif_key = f"spam_{cid}_{grp}"
                 now = time.time()
                 
                 if now - _last_notif_time.get(notif_key, 0) < 60:
                     continue
                 _last_notif_time[notif_key] = now
                 
-                title = "🚨 Log Spam Anomaly Detected"
-                msg = f"Pattern repeated {count} times in 1m. Sample: {sample_msg[:100]}..."
+                title = "🚨 Rate Limit / Spam Detected"
+                msg = f"Volume: {req_sec} req/sec (Total {count}/min).\nSample: {sample_msg[:100]}..."
                 
                 await db.execute(text(
                     "INSERT INTO notifications (type, severity, title, message, container_id) "
@@ -343,6 +366,7 @@ async def check_log_spam_anomalies():
                     "title": title, "message": msg, "container_id": cid,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
+                log.info("Emitted log_spam for container=%s grp=%s count=%d", cid, grp, count)
     except Exception as e:
         log.warning("check_log_spam_anomalies error: %s", e)
 
@@ -393,12 +417,56 @@ async def check_container_downtime():
     except Exception as e:
         log.warning("check_container_downtime error: %s", e)
 
-# ── App Lifecycle ─────────────────────────────────────────────────────────────
-scheduler = AsyncIOScheduler()
+async def check_and_assign_containers():
+    """Auto-map PSU registry containers to users based on image_name parsing."""
+    try:
+        sql = (
+            "SELECT DISTINCT container_name, image_name "
+            "FROM logs.container_logs "
+            "WHERE timestamp > now() - INTERVAL 1 HOUR "
+            "AND (image_name LIKE 'registry.in.psu.ac.th:443/%' OR image_name LIKE 'registry.in.psu.ac.th/%') "
+            "FORMAT JSONCompact"
+        )
+        url = f"http://{CH_HOST}:{CH_PORT}/"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params={"query": sql},
+                                   headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+                                   timeout=15) as resp:
+                if resp.status != 200: return
+                body = await resp.json(content_type=None)
+                rows = body.get("data", [])
 
+        # Parts: ["registry.in.psu.ac.th:443", "<username>", "<project>"]
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("SELECT id, username FROM users"))
+            users_map = {row[1]: row[0] for row in res.fetchall()}
+            
+            for row in rows:
+                cname, image_name = row[0], row[1]
+                parts = image_name.split('/')
+                if len(parts) >= 3:
+                    username = parts[1]
+                    uid = users_map.get(username)
+                    if uid:
+                        await db.execute(text(
+                            "INSERT INTO container_ownership (container_name, user_id) "
+                            "VALUES (:cname, :uid) "
+                            "ON CONFLICT DO NOTHING"
+                        ), {"cname": cname, "uid": uid})
+            await db.commit()
+    except Exception as e:
+        log.warning("check_and_assign_containers error: %s", e)
+
+# ── App Lifecycle & Rate Limiting ─────────────────────────────────────────────
+scheduler = AsyncIOScheduler()
+redis_client: redis_async.Redis = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global redis_client
+    redis_host = os.getenv("REDIS_HOST", "redis")
+    redis_client = redis_async.Redis(host=redis_host, port=6379, decode_responses=True)
+    
     await init_db()
     # ตรวจจับ Error จากคำใน Log (Regex)
     scheduler.add_job(check_critical_logs, "interval", seconds=30, id="critical_checker")
@@ -406,11 +474,40 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_log_spam_anomalies, "interval", seconds=30, id="spam_checker")
     # ตรวจจับ Container ดับ (Silence/Down timeout)
     scheduler.add_job(check_container_downtime, "interval", seconds=60, id="downtime_checker")
+    # แม็พ Container จาก Registry เข้ากับ SSO Users แบบอัตโนมัติ
+    scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
     
     scheduler.start()
     log.info("Scheduler started — checking logs and container health")
     yield
     scheduler.shutdown(wait=False)
+    if redis_client:
+        await redis_client.aclose()
+
+
+async def rate_limit_login(request: Request):
+    """Limit login attempts to 10 per minute per IP to prevent brute force."""
+    if not redis_client: return
+    forwarded = request.headers.get("X-Forwarded-For")
+    ip = forwarded.split(",")[0] if forwarded else request.client.host
+    key = f"rl:login:{ip}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, 60)
+    if current > 10:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+
+async def rate_limit_api(request: Request):
+    """Limit general API requests to 100 per minute per IP."""
+    if not redis_client: return
+    forwarded = request.headers.get("X-Forwarded-For")
+    ip = forwarded.split(",")[0] if forwarded else request.client.host
+    key = f"rl:api:{ip}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, 60)
+    if current > 100:
+        raise HTTPException(status_code=429, detail="Too many API requests.")
 
 
 app = FastAPI(title="Log Dashboard API", root_path=APP_BASE, lifespan=lifespan)
@@ -450,7 +547,7 @@ class LoginRequest(BaseModel):
 
 
 class AssignContainerRequest(BaseModel):
-    container_id: str
+    container_name: str
     user_id: int
 
 
@@ -465,7 +562,7 @@ class RoleUpdateRequest(BaseModel):
 
 
 # ── Routes: Auth ──────────────────────────────────────────────────────────────
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", dependencies=[Depends(rate_limit_login)])
 async def login(req: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     """Login with Super Admin (.env) or Database Users."""
     # 1. Check Super Admin
@@ -529,7 +626,7 @@ async def sso_redirect():
         return HTMLResponse(
             "<h2>PSU SSO not configured yet.</h2>"
             "<p>Authentik credentials not set. Contact administrator.</p>"
-            "<a href='/log/login'>← Back</a>",
+            "<a href='/logstore/login'>← Back</a>",
             status_code=503,
         )
     AUTHENTIK_SCOPES = os.getenv("AUTHENTIK_SCOPES", "openid profile email descope.claims descope.custom_claims")
@@ -591,13 +688,13 @@ async def sso_callback(code: str = Query(...), response: Response = None, db: As
         "user_id": user_id,
         "display_name": username,
     })
-    resp = RedirectResponse(url="/log/", status_code=302)
-    resp.set_cookie("access_token", access_token, httponly=True, samesite="lax", max_age=86400, path="/")
+    resp = RedirectResponse(url="/logstore/", status_code=302)
+    resp.set_cookie("access_token", access_token, httponly=True, samesite="lax", max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600, path="/")
     return resp
 
 
 # ── Routes: ClickHouse Proxy ──────────────────────────────────────────────────
-@app.get("/api/query")
+@app.get("/api/query", dependencies=[Depends(rate_limit_api)])
 async def ch_query(q: str = Query(...), user=Depends(get_current_user),
                    db: AsyncSession = Depends(get_db)):
     """Proxy SELECT queries to ClickHouse with role-based container filtering."""
@@ -610,17 +707,33 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
     modified_q = q
     if user.get("role") == "developer":
         result = await db.execute(text(
-            "SELECT container_id FROM container_ownership WHERE user_id = :uid"
+            "SELECT container_name FROM container_ownership WHERE user_id = :uid"
         ), {"uid": user.get("user_id")})
         owned = [row[0] for row in result.fetchall()]
         if not owned:
             return {"data": [], "rows": 0}
-        cid_list = ",".join(f"'{c}'" for c in owned)
-        # Naive injection of container filter — assumes query has FROM clause
-        if "WHERE" in q.upper():
-            modified_q = q + f" AND container_id IN ({cid_list})"
+        
+        cname_list = ",".join(f"'{c}'" for c in owned)
+        filter_clause = f" container_name IN ({cname_list})"
+
+        # Find where to insert the filter (before GROUP BY, ORDER BY, LIMIT, or FORMAT)
+        upper_q = q.upper()
+        keywords = [" GROUP BY ", " ORDER BY ", " LIMIT ", " FORMAT "]
+        insert_pos = len(q)
+        for keyword in keywords:
+            pos = upper_q.find(keyword)
+            if pos != -1 and pos < insert_pos:
+                insert_pos = pos
+        
+        prefix = q[:insert_pos].strip()
+        suffix = q[insert_pos:]
+        
+        if " WHERE " in prefix.upper():
+            modified_q = prefix + " AND " + filter_clause + suffix
         else:
-            modified_q = q + f" WHERE container_id IN ({cid_list})"
+            modified_q = prefix + " WHERE " + filter_clause + suffix
+        
+        log.info("Modified Query for Developer: %s", modified_q)
 
     url = f"http://{CH_HOST}:{CH_PORT}/"
     async with aiohttp.ClientSession() as session:
@@ -632,13 +745,14 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
                                timeout=aiohttp.ClientTimeout(total=30)) as resp:
             body = await resp.text()
             if resp.status != 200:
+                log.error("ClickHouse Error (%d): %s", resp.status, body)
                 raise HTTPException(resp.status, f"ClickHouse error: {body[:300]}")
             return JSONResponse(content=json.loads(body))
 
 
 @app.post("/api/exec")
-async def ch_exec(request: Request, user=Depends(require_role("super_admin", "admin"))):
-    """Proxy DDL/DML to ClickHouse — admin/super_admin only."""
+async def ch_exec(request: Request, user=Depends(require_role("super_admin"))):
+    """Proxy DDL/DML to ClickHouse — super_admin only."""
     sql = (await request.body()).decode("utf-8")
     stripped = sql.strip().upper()
     allowed_prefixes = ("TRUNCATE", "ALTER TABLE", "DROP PARTITION")
@@ -717,6 +831,75 @@ async def export_logs(
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/alerts/spam")
+async def list_spam_alerts(
+    limit: int = Query(default=50, ge=1, le=500),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return recent `log_spam` notifications for UI review.
+
+    Authenticated users can call this; developers will only see containers they own
+    via the client-side filter if needed. Returns recent rows from `notifications`.
+    """
+    result = await db.execute(text(
+        "SELECT id, title, message, container_id, container_name, created_at "
+        "FROM notifications "
+        "WHERE type = 'log_spam' "
+        "ORDER BY created_at DESC LIMIT :lim"
+    ), {"lim": limit})
+    rows = result.fetchall()
+    # If developer, restrict results to containers owned by the user
+    if user.get("role") == "developer":
+        res = await db.execute(text(
+            "SELECT container_id FROM container_ownership WHERE user_id = :uid"
+        ), {"uid": user.get("user_id")})
+        owned = {row[0] for row in res.fetchall()}
+        if not owned:
+            return []
+        rows = [r for r in rows if r[3] in owned]
+
+    return [
+        {
+            "id": r[0],
+            "title": r[1],
+            "message": r[2],
+            "container_id": r[3],
+            "container_name": r[4],
+            "created_at": str(r[5]),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/debug/spam-scan")
+async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db: AsyncSession = Depends(get_db)):
+    """Run the spam-detection SQL on-demand and return raw groups for debugging.
+
+    Admins can use this to validate whether ClickHouse returns candidate groups
+    after a stress run.
+    """
+    sql = (
+        "SELECT container_id, max(message) as sample_msg, count() as cnt, "
+        "substr(replaceRegexpAll(message, '[0-9\\:\\\.\\+\\-]+', ''), 1, 30) as grp "
+        "FROM logs.container_logs "
+        "WHERE timestamp > now() - INTERVAL 1 MINUTE "
+        "GROUP BY container_id, grp "
+        "HAVING cnt > 1 "
+        "ORDER BY cnt DESC "
+        "FORMAT JSONCompact"
+    )
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params={"query": sql},
+                               headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+                               timeout=10) as resp:
+            body = await resp.json(content_type=None) if resp.status == 200 else {"data": []}
+            rows = body.get("data", [])
+    # Return compact info for inspection
+    return [{"container_id": r[0], "sample": r[1][:200], "count": r[2], "grp": r[3]} for r in rows]
 
 
 # ── Routes: Users & Roles ─────────────────────────────────────────────────────
@@ -801,8 +984,12 @@ async def remove_container_assignment(
 # ── Routes: Settings ──────────────────────────────────────────────────────────
 @app.get("/api/settings")
 async def get_settings(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text("SELECT key, value FROM settings"))
-    return {r[0]: r[1] for r in result.fetchall()}
+    try:
+        result = await db.execute(text("SELECT key, value FROM settings"))
+        return {r[0]: r[1] for r in result.fetchall()}
+    except Exception as e:
+        log.exception("get_settings error: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to load settings")
 
 
 @app.post("/api/settings")
@@ -822,16 +1009,60 @@ async def update_setting(
 # ── Routes: Notifications ─────────────────────────────────────────────────────
 @app.get("/api/notifications")
 async def get_notifications(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(text(
-        "SELECT id, type, severity, title, message, container_id, container_name, created_at, read_at "
-        "FROM notifications ORDER BY created_at DESC LIMIT 50"
-    ))
-    rows = result.fetchall()
-    return [{
-        "id": r[0], "type": r[1], "severity": r[2], "title": r[3],
-        "message": r[4], "container_id": r[5], "container_name": r[6],
-        "created_at": str(r[7]), "read": r[8] is not None
-    } for r in rows]
+    try:
+        result = await db.execute(text(
+            "SELECT id, type, severity, title, message, container_id, container_name, created_at, read_at "
+            "FROM notifications ORDER BY created_at DESC LIMIT 200"
+        ))
+        rows = result.fetchall()
+
+        # If developer, restrict results to containers owned by the user
+        if user.get("role") == "developer":
+            res = await db.execute(text(
+                "SELECT container_id FROM container_ownership WHERE user_id = :uid"
+            ), {"uid": user.get("user_id")})
+            owned = {row[0] for row in res.fetchall()}
+            if not owned:
+                return []
+            rows = [r for r in rows if r[5] in owned]
+
+        return [
+            {
+                "id": r[0], "type": r[1], "severity": r[2], "title": r[3],
+                "message": r[4], "container_id": r[5], "container_name": r[6],
+                "created_at": str(r[7]), "read": r[8] is not None
+            } for r in rows]
+    except Exception as e:
+        log.exception("get_notifications error: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to load notifications")
+
+
+@app.get("/api/debug/db")
+async def debug_db(user=Depends(require_role("super_admin", "admin")), db: AsyncSession = Depends(get_db)):
+    """Admin-only DB health/check endpoint. Returns some quick diagnostics."""
+    try:
+        res = await db.execute(text("SELECT now()"))
+        now_row = res.fetchone()
+        res2 = await db.execute(text("SELECT count(*) FROM notifications"))
+        cnt = res2.fetchone()[0]
+        return {"now": str(now_row[0]), "notifications_count": int(cnt)}
+    except Exception as e:
+        log.exception("debug_db error: %s", e)
+        raise HTTPException(status_code=500, detail="DB diagnostic failed")
+
+
+@app.post("/api/debug/init-db")
+async def debug_init_db(user=Depends(require_role("super_admin", "admin"))):
+    """Admin-only: run the DB initialization SQL (creates missing tables/indexes and seeds users).
+
+    Use this when the app started before the database was ready and migrations did not run.
+    """
+    try:
+        await init_db()
+        return {"ok": True, "message": "init_db executed"}
+    except Exception as e:
+        log.exception("debug_init_db error: %s", e)
+        raise HTTPException(status_code=500, detail="init_db failed")
 
 
 @app.post("/api/notifications/read")

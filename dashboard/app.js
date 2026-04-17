@@ -1,17 +1,17 @@
 /**
  * app.js — Container Log Dashboard v2
  * =====================================
- * - Auth: JWT cookie via /log/api/auth, redirects to /log/login if not authenticated
- * - ClickHouse queries proxied through FastAPI /log/api/query (role-filtered)
- * - Export: JSV via /log/api/export with stack/time selection
- * - Notifications: SSE via /log/api/notifications/stream + in-memory history
+ * - Auth: JWT cookie via /logstore/api/auth, redirects to /logstore/login if not authenticated
+ * - ClickHouse queries proxied through FastAPI /logstore/api/query (role-filtered)
+ * - Export: JSV via /logstore/api/export with stack/time selection
+ * - Notifications: SSE via /logstore/api/notifications/stream + in-memory history
  * - Admin panel: user management, container ownership (super_admin / admin only)
  */
 
 "use strict";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const API_BASE = "/log/api";
+const API_BASE = "/logstore/api";
 const PAGE_SIZE = 12;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ async function checkAuth() {
   try {
     const res = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
     if (res.status === 401) {
-      window.location.href = "/log/login";
+      window.location.href = "/logstore/login";
       return false;
     }
     state.user = await res.json();
@@ -115,7 +115,7 @@ function applyRoleUI() {
 
 el("btn-logout").addEventListener("click", async () => {
   await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
-  window.location.href = "/log/login";
+  window.location.href = "/logstore/login";
 });
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ async function apiQuery(sql) {
   const res = await fetch(`${API_BASE}/query?q=${encodeURIComponent(sql)}`, {
     credentials: "include"
   });
-  if (res.status === 401) { window.location.href = "/log/login"; return []; }
+  if (res.status === 401) { window.location.href = "/logstore/login"; return []; }
   if (!res.ok) throw new Error(`Query failed (${res.status})`);
   const json = await res.json();
   return json.data || [];
@@ -136,7 +136,7 @@ async function apiExec(sql) {
     headers: { "Content-Type": "text/plain" },
     body: sql,
   });
-  if (res.status === 401) { window.location.href = "/log/login"; return; }
+  if (res.status === 401) { window.location.href = "/logstore/login"; return; }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw { status: res.status, message: err.detail || `Error ${res.status}` };
@@ -211,6 +211,8 @@ async function loadContainerList() {
       ORDER BY compose_project ASC, last_seen DESC LIMIT 100
     `);
     lastSidebarRows = rows;
+    state.cidToNameMap = {};
+    rows.forEach(r => state.cidToNameMap[r[0]] = r[1]);
     renderSidebar();
   } catch (e) { console.error("Container list error:", e); }
 }
@@ -355,8 +357,7 @@ function makeContainerItem(cid, name, dotClass, fullId, errorCount, parentStack)
     ${cid ? `<span class="c-star" title="Add to Stack">➕</span>` : ""}
   `;
   div.addEventListener("click", () => {
-    if (parentStack && folderDataMap[parentStack])
-      selectStack(parentStack, folderDataMap[parentStack].map(d => d.cid));
+    selectStack(name, [cid]);
   });
   div.querySelector(".c-star")?.addEventListener("click", e => {
     e.stopPropagation(); openAddToStackModal(cid, name);
@@ -441,7 +442,7 @@ function renderTable(rows) {
     const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
     return `<tr class="${rowCls}">
       <td class="td-ts">${formatTs(ts)}</td>
-      <td class="td-cid" title="${escHtml(cid)}">${String(cid).slice(0, 12)}</td>
+      <td class="td-cid" title="${escHtml(cid)}">${escHtml(state.cidToNameMap?.[cid] || String(cid).slice(0, 12))}</td>
       <td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
       <td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>
     </tr>`;
@@ -542,17 +543,22 @@ async function executeClear() {
 let exportSelectedContainers = [];   // [ { id, label } ]
 
 function openExportPanel() {
-  // Pre-fill with current stack/selection
+  // Pre-fill with current context
   exportSelectedContainers = [];
+
   if (state.selectedStack && state.stackContainers.length > 0) {
-    exportSelectedContainers = state.stackContainers.map(id => {
-      // Try to find display name
-      const found = (folderDataMap[state.selectedStack] || []).find(d => d.cid === id);
-      return { id, label: found?.displayName || id.slice(0, 12) };
-    });
+    if (state.stackContainers.length === 1) {
+      // If we clicked a single container, just that one
+      const cid = state.stackContainers[0];
+      exportSelectedContainers = [{ id: cid, label: state.cidToNameMap?.[cid] || cid.slice(0, 12) }];
+    } else {
+      // If we selected a stack, add all in stack
+      exportSelectedContainers = state.stackContainers.map(id => ({
+        id: id, label: state.cidToNameMap?.[id] || id.slice(0, 12)
+      }));
+    }
   }
 
-  // Pre-fill dates from filter bar
   el("export-from").value = el("range-from").value || "";
   el("export-to").value = el("range-to").value || "";
   el("export-all-time").checked = false;
@@ -736,11 +742,29 @@ function updateNotifBadge() {
 
 function renderNotifications() {
   const list = el("notif-list");
-  if (!state.notifications.length) {
-    list.innerHTML = `<div class="notif-empty">No critical alerts</div>`;
-    return;
-  }
-  list.innerHTML = state.notifications.slice(0, 20).map(n => `
+  list.innerHTML = `
+    <div class="notif-filter" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:10px;font-size:11px;">
+      <label><input type="radio" name="notif-filter" value="all" checked> All</label>
+      <label><input type="radio" name="notif-filter" value="container_down"> Downtime Only</label>
+    </div>
+    <div id="notif-items-container">
+      ${renderNotifItems()}
+    </div>
+  `;
+
+  // Filter events
+  list.querySelectorAll('input[name="notif-filter"]').forEach(r => {
+    r.addEventListener("change", () => {
+      el("notif-items-container").innerHTML = renderNotifItems(r.value);
+    });
+  });
+}
+
+function renderNotifItems(filter = "all") {
+  const filtered = filter === "all" ? state.notifications : state.notifications.filter(n => n.type === filter);
+  if (!filtered.length) return `<div class="notif-empty">No ${filter === "all" ? "" : "relevant"} critical alerts</div>`;
+
+  return filtered.slice(0, 20).map(n => `
     <div class="notif-item ${n.read ? "notif-read" : "notif-unread"}" data-id="${n.id}">
       <div class="notif-item-title">${escHtml(n.title)}</div>
       <div class="notif-item-msg">${escHtml(n.message)}</div>
@@ -828,53 +852,143 @@ async function loadUserList(q = "") {
   } catch (e) { el("user-list").innerHTML = `<div class="admin-empty">Error loading users</div>`; }
 }
 
-// Container search for assign panel (uses sidebar data)
-el("container-assign-search").addEventListener("input", () => {
-  const q = el("container-assign-search").value.toLowerCase();
-  // results shown in-place below the input (not a dropdown here)
-});
-
-el("btn-assign-container").addEventListener("click", async () => {
-  const cid = el("container-assign-search").value.trim();
-  const uid = parseInt(el("assign-user-select").value);
-  if (!cid || !uid) { alert("Please enter a container ID and select a user."); return; }
-  try {
-    await fetch(`${API_BASE}/admin/containers/assign`, {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ container_id: cid, user_id: uid }),
-    });
-    el("container-assign-search").value = "";
-    loadOwnershipList();
-  } catch { alert("Failed to assign container."); }
-});
+// Container Ownership State
+let currentOwnership = [];
+let assignSelectedContainers = []; // [ { id, label } ]
 
 async function loadOwnershipList() {
   try {
     const res = await fetch(`${API_BASE}/admin/containers/ownership`, { credentials: "include" });
-    if (!res.ok) return;
-    const rows = await res.json();
-    const list = el("ownership-list");
-    if (!rows.length) { list.innerHTML = `<div class="admin-empty">No ownership assignments</div>`; return; }
-    list.innerHTML = rows.map(r => `
-      <div class="admin-ownership-row">
-        <span class="admin-cid" title="${escHtml(r.container_id)}">${r.container_id.slice(0, 12)}</span>
-        <span class="admin-arrow">→</span>
-        <span class="admin-uname">${escHtml(r.username)}</span>
-        <span class="role-pill role-${r.role === "admin" ? "admin" : "dev"}">${r.role}</span>
-        <button class="btn-revoke btn-danger" data-cid="${escHtml(r.container_id)}" data-uid="${r.user_id}"
-                style="font-size:11px;padding:3px 8px;margin-left:auto;">Revoke</button>
-      </div>
-    `).join("");
-    list.querySelectorAll(".btn-revoke").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        await fetch(`${API_BASE}/admin/containers/assign?container_id=${encodeURIComponent(btn.dataset.cid)}&user_id=${btn.dataset.uid}`,
-          { method: "DELETE", credentials: "include" });
-        loadOwnershipList();
-      });
-    });
+    if (res.ok) currentOwnership = await res.json();
+    renderOwnershipList();
   } catch { }
 }
+
+function renderOwnershipList() {
+  const list = el("ownership-list");
+  const uid = el("assign-user-select").value;
+
+  if (!uid) {
+    list.innerHTML = `<div class="admin-empty">Select a user above to see their containers</div>`;
+    el("container-assign-search").disabled = true;
+    el("btn-assign-container").disabled = true;
+    return;
+  }
+
+  el("container-assign-search").disabled = false;
+  el("btn-assign-container").disabled = assignSelectedContainers.length === 0;
+
+  const rows = currentOwnership.filter(r => String(r.user_id) === String(uid));
+  if (!rows.length) {
+    list.innerHTML = `<div class="admin-empty">No ownership assignments for this user</div>`;
+    return;
+  }
+
+  list.innerHTML = rows.map(r => `
+    <div class="admin-ownership-row">
+      <span class="admin-cid" title="${escHtml(r.container_id)}">${r.container_id.slice(0, 12)}</span>
+      <span class="admin-arrow">→</span>
+      <span class="admin-uname">${escHtml(r.username)}</span>
+      <button class="btn-revoke btn-danger" data-cid="${escHtml(r.container_id)}" data-uid="${r.user_id}"
+              style="font-size:11px;padding:3px 8px;margin-left:auto;">Revoke</button>
+    </div>
+  `).join("");
+
+  list.querySelectorAll(".btn-revoke").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      await fetch(`${API_BASE}/admin/containers/assign?container_id=${encodeURIComponent(btn.dataset.cid)}&user_id=${btn.dataset.uid}`, { method: "DELETE", credentials: "include" });
+      loadOwnershipList();
+    });
+  });
+}
+
+el("assign-user-select").addEventListener("change", () => {
+  assignSelectedContainers = [];
+  renderAssignTags();
+  renderOwnershipList();
+});
+
+function renderAssignTags() {
+  const container = el("assign-selected-tags");
+  container.innerHTML = "";
+  assignSelectedContainers.forEach(({ id, label }) => {
+    const tag = document.createElement("span");
+    tag.className = "export-tag";
+    tag.innerHTML = `${escHtml(label)} <button class="export-tag-remove" data-id="${escHtml(id)}">&times;</button>`;
+    tag.querySelector(".export-tag-remove").addEventListener("click", () => {
+      assignSelectedContainers = assignSelectedContainers.filter(c => c.id !== id);
+      renderAssignTags();
+      el("btn-assign-container").disabled = assignSelectedContainers.length === 0;
+    });
+    container.appendChild(tag);
+  });
+  el("btn-assign-container").disabled = assignSelectedContainers.length === 0 || !el("assign-user-select").value;
+}
+
+el("container-assign-search").addEventListener("input", () => {
+  const q = el("container-assign-search").value.toLowerCase().trim();
+  const results = el("assign-container-results");
+  const uid = el("assign-user-select").value;
+  if (!q || !uid) { results.classList.add("hidden"); return; }
+
+  const ownedCids = currentOwnership.filter(r => String(r.user_id) === String(uid)).map(r => r.container_id);
+
+  const matches = [];
+  lastSidebarRows.forEach(([cid, cname]) => {
+    if (ownedCids.includes(cid) || assignSelectedContainers.find(c => c.id === cid)) return;
+    if (cname.toLowerCase().includes(q) || cid.includes(q)) {
+      matches.push({ type: "container", label: `📦 ${cname || cid.slice(0, 12)}`, id: cid, name: cname || cid.slice(0, 12) });
+    }
+  });
+
+  if (!matches.length) { results.innerHTML = `<div class="export-no-result">No matches</div>`; results.classList.remove("hidden"); return; }
+
+  results.innerHTML = "";
+  matches.slice(0, 10).forEach(m => {
+    const item = document.createElement("div");
+    item.className = "export-result-item";
+    item.textContent = m.label;
+    item.addEventListener("click", () => {
+      assignSelectedContainers.push({ id: m.id, label: m.name });
+      renderAssignTags();
+      el("container-assign-search").value = "";
+      results.classList.add("hidden");
+    });
+    results.appendChild(item);
+  });
+  results.classList.remove("hidden");
+});
+
+document.addEventListener("click", e => {
+  if (!e.target.closest("#container-assign-search") && !e.target.closest("#assign-container-results"))
+    el("assign-container-results")?.classList.add("hidden");
+});
+
+el("btn-assign-container").addEventListener("click", async () => {
+  const uid = parseInt(el("assign-user-select").value);
+  if (!uid || assignSelectedContainers.length === 0) return;
+
+  el("btn-assign-container").disabled = true;
+  el("btn-assign-container").textContent = "Assigning...";
+
+  try {
+    for (const c of assignSelectedContainers) {
+      await fetch(`${API_BASE}/admin/containers/assign`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ container_id: c.id, user_id: uid }),
+      });
+    }
+    assignSelectedContainers = [];
+    renderAssignTags();
+    loadOwnershipList();
+  } catch {
+    alert("Failed to assign some containers.");
+  } finally {
+    el("btn-assign-container").disabled = false;
+    el("btn-assign-container").textContent = "Assign Containers";
+  }
+});
 
 // User search debounce
 let userSearchTimer = null;

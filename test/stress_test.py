@@ -4,8 +4,8 @@ import time
 import statistics
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-TARGET_URL = "http://localhost/log/api/health"
-TOTAL_REQUESTS = 2000
+TARGET_URL = "http://localhost/logstore/api/health"
+TOTAL_REQUESTS = 1000
 CONCURRENT_LIMIT = 50 
 
 async def send_request(client, semaphore, results):

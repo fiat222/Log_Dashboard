@@ -1,32 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Container Log Dashboard</title>
   <meta name="description" content="Real-time Docker container log viewer for the university registration system." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <script src="chart.umd.js"></script>
 </head>
+
 <body>
-  <!-- ── Layout ─────────────────────────────────────────────────────── -->
+  <!-- ── Layout ───────────────────────────────────────────────────── -->
   <div id="app">
 
     <!-- Sidebar -->
     <aside id="sidebar">
       <div class="sidebar-header">
-        <div class="logo">
-          <span class="logo-text">Log Dashboard</span>
+        <div class="header-main" style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 20px;">
+          <div class="logo">
+            <span class="logo-text">Log Dashboard</span>
+          </div>
+          <button id="btn-logout" class="btn-logout" title="Logout" style="display:none;">logout</button>
         </div>
-        <div class="sidebar-legend" title="Dot Color Legend:
-🟢 < 1m (Active)
-🟠 < 5m (Recent)
-🔴 > 5m (Inactive)">
+
+        <!-- User info pill -->
+        <div id="user-pill" class="user-pill" style="display:none;">
+          <span id="user-role-badge" class="role-badge"></span>
+          <span id="user-display-name" class="user-name"></span>
+        </div>
+
+        <div class="sidebar-legend" title="Dot Color Legend">
           <span class="sidebar-label">STACKS</span>
           <span class="info-icon">ℹ️</span>
-          <button id="btn-new-stack" class="btn-ghost btn-icon" style="margin-left: auto; padding: 2px 6px; font-size: 16px;" title="Create New Stack">+</button>
+          <button id="btn-new-stack" class="btn-ghost btn-icon"
+            style="margin-left: auto; padding: 2px 6px; font-size: 16px;" title="Create New Stack">+</button>
         </div>
       </div>
       <div class="sidebar-scroll">
@@ -34,6 +46,35 @@
           <div class="skeleton-item"></div>
           <div class="skeleton-item"></div>
           <div class="skeleton-item"></div>
+        </div>
+      </div>
+
+      <!-- Settings section (admin/super_admin only) -->
+      <div id="sidebar-settings" class="sidebar-settings hidden">
+        <div class="settings-section-title">⚙️ Settings</div>
+
+        <div class="settings-row">
+          <label>Log Retention (days)</label>
+          <input type="number" id="setting-ttl" min="1" max="365" value="90" class="settings-input" />
+          <button class="btn-save-setting" data-key="ttl_days" data-src="setting-ttl">Save</button>
+        </div>
+
+        <div class="settings-row">
+          <label>Active (green) &lt; N sec</label>
+          <input type="number" id="setting-green" min="5" max="3600" value="60" class="settings-input" />
+          <button class="btn-save-setting" data-key="dot_green_threshold_sec" data-src="setting-green">Save</button>
+        </div>
+
+        <div class="settings-row">
+          <label>Recent (orange) &lt; N sec</label>
+          <input type="number" id="setting-amber" min="5" max="3600" value="300" class="settings-input" />
+          <button class="btn-save-setting" data-key="dot_amber_threshold_sec" data-src="setting-amber">Save</button>
+        </div>
+
+        <div class="settings-row">
+          <label>Active Color</label>
+          <input type="color" id="setting-color-green" value="#059669" class="settings-color" />
+          <button class="btn-save-setting" data-key="active_color_green" data-src="setting-color-green">Save</button>
         </div>
       </div>
     </aside>
@@ -46,8 +87,10 @@
         <div class="view-tabs">
           <button id="tab-logs" class="tab-btn active">📄 Logs</button>
           <button id="tab-analytics" class="tab-btn">📊 Analytics</button>
+          <!-- Admin only -->
+          <button id="tab-admin" class="tab-btn hidden" title="Admin Panel">🛡 Admin</button>
         </div>
-        
+
         <div class="metric-card" id="m-total" style="margin-left: auto;">
           <span class="metric-value">—</span>
           <span class="metric-label">Total Logs</span>
@@ -65,13 +108,67 @@
           <span class="metric-label">Active Containers</span>
         </div>
 
-        <button id="btn-clear-db" class="btn-danger" title="Clear database" style="margin-left:10px;">
+        <!-- Notification Bell -->
+        <div class="notif-bell-wrapper" id="notif-wrapper">
+          <button id="btn-notif" class="btn-icon-circle" title="Notifications" aria-label="Notifications">
+            🔔
+            <span id="notif-badge" class="notif-badge hidden">0</span>
+          </button>
+          <!-- Notification dropdown -->
+          <div id="notif-dropdown" class="notif-dropdown hidden">
+            <div class="notif-header">
+              <span class="notif-title">🚨 Critical Alerts</span>
+              <button id="btn-mark-read" class="btn-ghost" style="font-size:11px; padding:3px 8px;">Mark all
+                read</button>
+            </div>
+            <div id="notif-list" class="notif-list">
+              <div class="notif-empty">No critical alerts</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Admin-only buttons -->
+        <button id="btn-clear-db" class="btn-danger hidden" title="Clear database">
           🗑 Clear DB
         </button>
         <button id="btn-refresh" class="btn-secondary" title="Refresh data">
           ↻ Refresh
         </button>
       </header>
+
+      <!-- Admin Panel (hidden by default) -->
+      <section id="admin-section" class="hidden" style="flex:1; overflow-y:auto; padding:20px;">
+        <div class="admin-grid">
+          <!-- User Management -->
+          <div class="admin-card">
+            <h3>👥 User Management</h3>
+            <div class="admin-search-row">
+              <input type="search" id="user-search" placeholder="Search users..." class="admin-search-input" />
+            </div>
+            <div id="user-list" class="admin-list">
+              <div class="admin-empty">Loading users...</div>
+            </div>
+          </div>
+
+          <!-- Container Ownership -->
+          <div class="admin-card">
+            <h3>📦 Container Ownership</h3>
+            <p class="admin-hint">Assign containers to developers</p>
+            <div class="admin-search-row">
+              <input type="search" id="container-assign-search" placeholder="Search containers..."
+                class="admin-search-input" />
+              <select id="assign-user-select" class="admin-select">
+                <option value="">— Select user —</option>
+              </select>
+              <button id="btn-assign-container" class="btn-primary"
+                style="font-size:12px; padding:5px 10px;">Assign</button>
+            </div>
+            <div id="ownership-list" class="admin-list" style="margin-top:12px;">
+              <div class="admin-empty">Loading ownership...</div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <!-- Analytics View (Hidden by default) -->
       <section id="analytics-section" class="hidden">
@@ -122,6 +219,7 @@
           </div>
           <button id="btn-apply" class="btn-primary">Apply</button>
           <button id="btn-reset" class="btn-ghost">Reset</button>
+          <button id="btn-export" class="btn-secondary" title="Export logs as JSV">⬇ Export</button>
         </section>
 
         <!-- Log table -->
@@ -138,7 +236,9 @@
                 </tr>
               </thead>
               <tbody id="log-body">
-                <tr><td colspan="4" class="empty-state">Loading logs…</td></tr>
+                <tr>
+                  <td colspan="4" class="empty-state">Loading logs…</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -165,13 +265,7 @@
         <label><input type="radio" name="clear-range" value="all" /> All data</label>
       </div>
       <div class="modal-note" id="modal-query-preview"></div>
-
-      <div class="modal-auth">
-        <label for="admin-password">Admin Password <span class="auth-hint">(From .env CLICKHOUSE_PASSWORD)</span></label>
-        <input type="password" id="admin-password" placeholder="Enter password to authorize..." autocomplete="off">
-        <div id="modal-error" class="error-msg hidden"></div>
-      </div>
-
+      <div id="modal-error" class="error-msg hidden"></div>
       <div class="modal-actions">
         <button id="btn-modal-cancel" class="btn-ghost">Cancel</button>
         <button id="btn-modal-confirm" class="btn-danger">Confirm Delete</button>
@@ -179,6 +273,47 @@
     </div>
   </div>
 
+  <!-- ── Export Panel ───────────────────────────────────────────────── -->
+  <div id="export-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="export-title">
+    <div class="modal" style="max-width:520px;">
+      <h2 id="export-title">⬇ Export Logs (JSV)</h2>
+      <p>Export logs as newline-delimited JSON (JSV). Each line is one log entry.</p>
+
+      <div style="margin-bottom:16px;">
+        <label class="modal-field-label">Stack / Container</label>
+        <input type="search" id="export-stack-search" placeholder="Search stacks or containers..." autocomplete="off"
+          class="export-search-input" />
+        <div id="export-stack-results" class="export-stack-dropdown hidden"></div>
+        <div id="export-selected-tags" class="export-tags"></div>
+      </div>
+
+      <div style="display:flex; gap:16px; margin-bottom:16px;">
+        <div style="flex:1;">
+          <label class="modal-field-label">From</label>
+          <input type="datetime-local" id="export-from" class="export-dt-input" />
+        </div>
+        <div style="flex:1;">
+          <label class="modal-field-label">To</label>
+          <input type="datetime-local" id="export-to" class="export-dt-input" />
+        </div>
+      </div>
+
+      <label
+        style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-dim); margin-bottom:20px; cursor:pointer;">
+        <input type="checkbox" id="export-all-time" style="accent-color:var(--accent);" />
+        Export all time (ignore date range)
+      </label>
+
+      <div id="export-status" class="export-status hidden"></div>
+
+      <div class="modal-actions">
+        <button id="btn-export-cancel" class="btn-ghost">Cancel</button>
+        <button id="btn-export-confirm" class="btn-primary">⬇ Download JSV</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
+
 </html>

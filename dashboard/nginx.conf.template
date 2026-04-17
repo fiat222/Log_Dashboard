@@ -1,78 +1,78 @@
-# nginx.conf — Dashboard container Nginx configuration
-# Purpose: serve dashboard static files AND reverse-proxy /clickhouse → ClickHouse:8123
-# This avoids CORS issues when the browser JS queries ClickHouse directly.
-# Mount this file into the log-dashboard container if needed, or bake it via Dockerfile.
+# nginx.conf.template — Log Dashboard (Fixed Static Assets)
 
 server {
     listen 80;
     server_name _;
 
-    # ── Static dashboard files ─────────────────────────────────────────────
-    root /usr/share/nginx/html;
-    index index.html;
+    # ── Security headers ───────────────────────────────────────────────────────
+    add_header X-Frame-Options       "SAMEORIGIN"  always;
+    add_header X-Content-Type-Options "nosniff"    always;
+    add_header Referrer-Policy       "strict-origin" always;
 
-    location / {
+    # ── Path prefix: /log ──────────────────────────────────────────────────────
+    
+    # Login page & SSO Callback interceptor
+    location = /log/login {
+        if ($arg_code) {
+            rewrite ^ /log/auth/callback last;
+        }
+        alias /usr/share/nginx/html/login/;
+        try_files index.html =404;
+    }
+    location /log/login/ {
+        alias /usr/share/nginx/html/login/;
+        try_files $uri $uri/ /login/index.html;
+    }
+
+    # Backend API Proxy
+    location /log/api/ {
+        proxy_pass         http://backend:8000/api/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_buffering    off;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+    }
+
+    location /log/auth/ {
+        proxy_pass         http://backend:8000/auth/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+    }
+
+    # PSU SSO Redirect URI Support
+    location = /login/generic_oauth {
+        proxy_pass         http://backend:8000/auth/callback;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # Static dashboard files & Assets
+    location /log/ {
+        alias   /usr/share/nginx/html/;
+        index   index.html;
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache, no-store" always;
+
+        # ชุดนี้จะจัดการไฟล์ .css, .js ให้ดึงจาก alias ด้านบนได้ถูกต้อง
+        location ~* \.(css|js|woff2?|png|ico|svg)$ {
+            access_log off;
+            expires 1h;
+            add_header Cache-Control "public, no-transform";
+        }
     }
 
-    # ── Reverse proxy: /clickhouse → ClickHouse HTTP API ──────────────────
-    # The browser JS fetches /clickhouse/?query=... which proxies here.
-    # Credentials are NOT embedded in JS — they're set via proxy_set_header.
-    location /clickhouse/ {
-        proxy_pass http://clickhouse:8123/;
-
-        # Inject ClickHouse credentials server-side — never exposed to browser
-        proxy_set_header X-ClickHouse-User     "loguser";
-        proxy_set_header X-ClickHouse-Key      "${CLICKHOUSE_PASSWORD}";
-        proxy_set_header X-ClickHouse-Database "logs";
-
-        proxy_read_timeout       30s;
-        proxy_connect_timeout    5s;
-        proxy_send_timeout       30s;
-
-        # Allow only SELECT queries through — block mutations from browser
-        # (Mutations come from server-side clear-DB action via app.js only)
-        # Note: Full mutation blocking would require a Lua filter or WAF.
-        # For now we rely on the loguser account having restricted permissions.
-        add_header Access-Control-Allow-Origin  "*" always;
-        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type" always;
+    location = /log {
+        return 301 /log/;
     }
 
-    # ── Secure Admin proxy: /clickhouse-admin/ → ClickHouse HTTP API ──────────
-    # This endpoint is used for clearing the DB. It does NOT automatically inject
-    # the password. The frontend must send it via URL parameters (?password=xxx).
-    location /clickhouse-admin/ {
-        proxy_pass http://clickhouse:8123/;
-
-        proxy_set_header X-ClickHouse-User     "loguser";
-        proxy_set_header X-ClickHouse-Database "logs";
-        # X-ClickHouse-Key is omitted intentionally.
-
-        proxy_read_timeout       30s;
-        proxy_connect_timeout    5s;
-        proxy_send_timeout       60s; # Deletes can take a while
-
-        add_header Access-Control-Allow-Origin  "*" always;
-        add_header Access-Control-Allow-Methods "POST, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, X-ClickHouse-Key" always;
-    }
-
-    # ── Health check endpoint ──────────────────────────────────────────────
+    # ── Health check ───────────────────────────────────────────────────────────
     location /health {
         return 200 "ok";
         add_header Content-Type text/plain;
-    }
-
-    # ── Security headers ───────────────────────────────────────────────────
-    add_header X-Frame-Options      "SAMEORIGIN"       always;
-    add_header X-Content-Type-Options "nosniff"        always;
-    add_header Referrer-Policy      "strict-origin"    always;
-
-    # Disable access logs for static assets to reduce container log noise
-    location ~* \.(css|js|woff2?|png|ico|svg)$ {
-        access_log off;
-        expires 1h;
     }
 }

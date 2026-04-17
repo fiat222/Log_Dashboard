@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Dashboard — PSU Login</title>
+  <meta name="description" content="Sign in to PSU Container Log Dashboard" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --psu-blue: #1a3a6b;
+      --psu-light: #2563eb;
+      --psu-glow: rgba(37, 99, 235, 0.35);
+      --accent: #4f46e5;
+      --bg: #0a0f1e;
+      --surface: rgba(255, 255, 255, 0.04);
+      --border: rgba(255, 255, 255, 0.09);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --error: #f43f5e;
+      --success: #10b981;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      font-family: 'Inter', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Animated background orbs */
+    .bg-orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.25;
+      animation: float 8s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    .bg-orb-1 {
+      width: 600px;
+      height: 600px;
+      background: var(--psu-light);
+      top: -120px;
+      left: -120px;
+      animation-delay: 0s;
+    }
+
+    .bg-orb-2 {
+      width: 500px;
+      height: 500px;
+      background: var(--accent);
+      bottom: -100px;
+      right: -80px;
+      animation-delay: -3s;
+    }
+
+    .bg-orb-3 {
+      width: 600px;
+      height: 600px;
+      background: #589eff;
+      top: 40%;
+      left: 40%;
+      animation-delay: -5s;
+    }
+
+    @keyframes float {
+
+      0%,
+      100% {
+        transform: translateY(0) scale(1);
+      }
+
+      50% {
+        transform: translateY(-30px) scale(1.05);
+      }
+    }
+
+    .login-card {
+      position: relative;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(24px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 48px 44px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
+      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(28px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .logo-area {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+
+    .logo-icon {
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--psu-light), var(--accent));
+      border-radius: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      margin-bottom: 16px;
+      box-shadow: 0 0 40px var(--psu-glow);
+      animation: pulse-glow 3s ease-in-out infinite;
+    }
+
+    @keyframes pulse-glow {
+
+      0%,
+      100% {
+        box-shadow: 0 0 40px var(--psu-glow);
+      }
+
+      50% {
+        box-shadow: 0 0 70px var(--psu-glow), 0 0 120px rgba(79, 70, 229, 0.2);
+      }
+    }
+
+    .logo-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .logo-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* SSO Button */
+    .btn-sso {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      padding: 14px 20px;
+      background: linear-gradient(135deg, var(--psu-blue), var(--psu-light));
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
+      margin-bottom: 24px;
+    }
+
+    .btn-sso:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 30px rgba(37, 99, 235, 0.55);
+      filter: brightness(1.08);
+    }
+
+    .btn-sso:active {
+      transform: scale(0.98);
+    }
+
+    .psu-icon {
+      font-size: 22px;
+    }
+
+    /* Divider */
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .divider-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* Admin form */
+    .admin-form {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .form-input {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      padding: 11px 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .password-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .password-wrapper input {
+      width: 100%;
+      padding-right: 40px;
+    }
+
+    .pw-toggle {
+      position: absolute;
+      right: 10px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+
+    .pw-toggle:hover {
+      color: #fff;
+    }
+
+    .form-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+    }
+
+    .form-input::placeholder {
+      color: rgba(148, 163, 184, 0.5);
+    }
+
+    .btn-admin {
+      background: rgba(79, 70, 229, 0.15);
+      color: #a5b4fc;
+      border: 1px solid rgba(79, 70, 229, 0.3);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 4px;
+    }
+
+    .btn-admin:hover {
+      background: rgba(79, 70, 229, 0.25);
+      border-color: rgba(79, 70, 229, 0.5);
+      color: #c7d2fe;
+    }
+
+    .btn-admin:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .error-banner {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      border-radius: 8px;
+      color: var(--error);
+      font-size: 13px;
+      padding: 10px 14px;
+      display: none;
+    }
+
+    .error-banner.show {
+      display: block;
+    }
+
+    .footer-note {
+      text-align: center;
+      margin-top: 28px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .footer-note a {
+      color: #818cf8;
+      text-decoration: none;
+    }
+
+    .footer-note a:hover {
+      text-decoration: underline;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bg-orb bg-orb-1"></div>
+  <div class="bg-orb bg-orb-2"></div>
+  <div class="bg-orb bg-orb-3"></div>
+
+  <div class="login-card">
+    <div class="logo-area">
+      <div class="logo-icon">📊</div>
+      <div class="logo-title">Log Dashboard</div>
+      <div class="logo-subtitle">Prince of Songkla University · EILA</div>
+    </div>
+
+    <!-- PSU SSO Button -->
+    <a id="btn-sso" class="btn-sso" href="/log/auth/sso">
+      <span class="psu-icon">🎓</span>
+      Sign in with PSU Passport
+    </a>
+
+    <div class="divider">
+      <span class="divider-text">หรือเข้าสู่ระบบด้วยบัญชีผู้ดูแลระบบ (Admin)</span>
+    </div>
+
+    <!-- Admin form -->
+    <form class="admin-form" id="admin-form">
+      <div class="error-banner" id="error-msg"></div>
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input id="username" class="form-input" type="text" placeholder="username" autocomplete="username" required />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <div class="password-wrapper">
+          <input id="password" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password"
+            required />
+          <button type="button" id="pw-toggle" class="pw-toggle" title="Show/Hide password" tabindex="-1"
+            style="font-size:12px;">show</button>
+        </div>
+      </div>
+      <button type="submit" class="btn-admin" id="login-btn">
+        เข้าสู่ระบบ
+      </button>
+    </form>
+  </div>
+
+  <script>
+    const pwToggle = document.getElementById("pw-toggle");
+    const pwInput = document.getElementById("password");
+    pwToggle.addEventListener("click", () => {
+      const type = pwInput.getAttribute("type") === "password" ? "text" : "password";
+      pwInput.setAttribute("type", type);
+      pwToggle.textContent = type === "password" ? "show" : "hide";
+    });
+
+    document.getElementById("admin-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("login-btn");
+      const errEl = document.getElementById("error-msg");
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> กำลังเข้าสู่ระบบ...';
+      errEl.classList.remove("show");
+
+      try {
+        const res = await fetch("/log/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+          credentials: "include"
+        });
+        if (res.ok) {
+          window.location.href = "/log/";
+        } else {
+          const data = await res.json().catch(() => ({}));
+          errEl.textContent = data.detail || "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง";
+          errEl.classList.add("show");
+        }
+      } catch (err) {
+        errEl.textContent = "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้";
+        errEl.classList.add("show");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "เข้าสู่ระบบ";
+      }
+    });
+  </script>
+</body>
+
+</html>

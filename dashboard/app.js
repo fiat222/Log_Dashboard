@@ -18,7 +18,7 @@ const PAGE_SIZE = 12;
 let state = {
   user: null,             // { username, role, user_id, display_name }
   selectedStack: null,
-  stackContainers: [],
+  stackNames: [],
   search: "",
   level: "",
   sortDir: "DESC",
@@ -146,9 +146,9 @@ async function apiExec(sql) {
 // ── Build WHERE clause ────────────────────────────────────────────────────────
 function buildWhere(includeStack = true) {
   const parts = [];
-  if (includeStack && state.selectedStack && state.stackContainers.length > 0) {
-    const cids = state.stackContainers.map(c => `'${esc(c)}'`).join(",");
-    parts.push(`container_id IN (${cids})`);
+  if (includeStack && state.selectedStack && state.stackNames.length > 0) {
+    const cnames = state.stackNames.map(c => `'${esc(c)}'`).join(",");
+    parts.push(`container_name IN (${cnames})`);
   }
   if (state.level) parts.push(`level = '${esc(state.level)}'`);
   if (state.search) parts.push(`message ILIKE '%${escLike(state.search)}%'`);
@@ -197,7 +197,7 @@ let folderDataMap = {};
 async function loadContainerList() {
   try {
     const rows = await apiQuery(`
-      SELECT container_id, container_name, max(timestamp) AS last_seen,
+      SELECT container_name, max(timestamp) AS last_seen,
              count() AS log_count, countIf(level='error') AS error_count,
              if(isValidJSON(labels),
                if(JSONExtractString(labels,'com.docker.compose.project') != '',
@@ -207,12 +207,10 @@ async function loadContainerList() {
                'Other') AS compose_project
       FROM container_logs
       WHERE timestamp > now() - INTERVAL 24 HOUR
-      GROUP BY container_id, container_name, compose_project
+      GROUP BY container_name, compose_project
       ORDER BY compose_project ASC, last_seen DESC LIMIT 100
     `);
     lastSidebarRows = rows;
-    state.cidToNameMap = {};
-    rows.forEach(r => state.cidToNameMap[r[0]] = r[1]);
     renderSidebar();
   } catch (e) { console.error("Container list error:", e); }
 }
@@ -228,7 +226,7 @@ function renderSidebar() {
   allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
   allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Containers</span>`;
   allItem.addEventListener("click", () => {
-    state.selectedStack = null; state.stackContainers = []; state.page = 0;
+    state.selectedStack = null; state.stackNames = []; state.page = 0;
     loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
   });
   folderList.appendChild(allItem);
@@ -241,19 +239,17 @@ function renderSidebar() {
   const now = Date.now();
 
   lastSidebarRows.forEach(row => {
-    const [cid, cname, lastSeen, , errorCount, rawProject] = row;
+    const [cname, lastSeen, , errorCount, rawProject] = row;
     const ageSec = (now - new Date(lastSeen).getTime()) / 1000;
     const dot = ageSec < dotThresholds.green ? "green"
       : ageSec < dotThresholds.amber ? "amber" : "red";
     let displayName = cname;
-    if (!displayName || String(displayName).toLowerCase() === "unknown")
-      displayName = String(cid).slice(0, 12);
-    const itemData = { cid, displayName, dot, errorCount, fullId: cid };
+    const itemData = { displayName, dot, errorCount };
     const displayProject = aliases[rawProject] || rawProject;
     if (!folderDataMap[displayProject]) folderDataMap[displayProject] = [];
     folderDataMap[displayProject].push(itemData);
-    for (const [stackName, ids] of Object.entries(customStacks)) {
-      if (ids.includes(cid)) {
+    for (const [stackName, names] of Object.entries(customStacks)) {
+      if (names.includes(cname)) {
         if (!folderDataMap[stackName]) folderDataMap[stackName] = [];
         folderDataMap[stackName].push(itemData);
       }
@@ -298,7 +294,7 @@ function renderSidebar() {
         return;
       }
       folderDataMap[stackName].forEach(data => {
-        childrenContainer.appendChild(makeContainerItem(data.cid, data.displayName, data.dot, data.fullId, data.errorCount, stackName));
+        childrenContainer.appendChild(makeContainerItem(data.displayName, data.dot, data.errorCount));
       });
       childrenContainer.removeAttribute("data-loaded");
     };
@@ -335,37 +331,38 @@ function renderSidebar() {
     header.addEventListener("click", e => {
       if (e.target.closest(".stack-actions")) return;
       if (folderDataMap[stackName].length > 0)
-        selectStack(stackName, folderDataMap[stackName].map(d => d.cid));
+        selectStack(stackName, folderDataMap[stackName].map(d => d.displayName));
     });
 
     folderList.appendChild(group);
   });
 }
 
-function selectStack(stackName, containerIds) {
-  state.selectedStack = stackName; state.stackContainers = containerIds || []; state.page = 0;
+function selectStack(stackName, containerNames) {
+  state.selectedStack = stackName; state.stackNames = containerNames || []; state.page = 0;
   loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
 }
 
-function makeContainerItem(cid, name, dotClass, fullId, errorCount, parentStack) {
+function makeContainerItem(name, dotClass, errorCount) {
   const div = document.createElement("div");
-  div.className = "container-item";
+  const isSelected = state.selectedStack === name;
+  div.className = "container-item" + (isSelected ? " active" : "");
   div.innerHTML = `
     ${dotClass ? `<span class="c-dot ${dotClass}"></span>` : `<span class="c-dot" style="background:var(--accent)"></span>`}
-    <span class="c-name" title="${escHtml(fullId)}">${escHtml(name || fullId)}</span>
+    <span class="c-name">${escHtml(name)}</span>
     ${errorCount > 0 ? `<span class="c-badge">${fmt(errorCount)}</span>` : ""}
-    ${cid ? `<span class="c-star" title="Add to Stack">➕</span>` : ""}
+    ${name ? `<span class="c-star" title="Add to Stack">➕</span>` : ""}
   `;
   div.addEventListener("click", () => {
-    selectStack(name, [cid]);
+    selectStack(name, [name]);
   });
   div.querySelector(".c-star")?.addEventListener("click", e => {
-    e.stopPropagation(); openAddToStackModal(cid, name);
+    e.stopPropagation(); openAddToStackModal(name);
   });
   return div;
 }
 
-function openAddToStackModal(containerId, containerName) {
+function openAddToStackModal(containerName) {
   const stacks = STORAGE.getStacks();
   const modal = document.createElement("div");
   modal.className = "modal-overlay";
@@ -398,7 +395,7 @@ function openAddToStackModal(containerId, containerName) {
     o.addEventListener("click", () => {
       const s = STORAGE.getStacks(); const sn = o.dataset.stack;
       if (!s[sn]) s[sn] = [];
-      if (!s[sn].includes(containerId)) { s[sn].push(containerId); STORAGE.saveStacks(s); renderSidebar(); }
+      if (!s[sn].includes(containerName)) { s[sn].push(containerName); STORAGE.saveStacks(s); renderSidebar(); }
       modal.remove();
     });
     o.addEventListener("mouseenter", () => o.style.background = "var(--bg-elevated)");
@@ -417,7 +414,7 @@ async function loadLogs() {
     el("table-status").textContent = "Loading…";
     const [countRows, dataRows] = await Promise.all([
       apiQuery(`SELECT count() FROM container_logs ${where}`),
-      apiQuery(`SELECT timestamp, container_id, level, message FROM container_logs ${where} ORDER BY timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`),
+      apiQuery(`SELECT timestamp, container_name, level, message FROM container_logs ${where} ORDER BY timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`),
     ]);
     state.totalRows = parseInt(countRows[0]?.[0] ?? 0, 10);
     const totalPages = Math.max(1, Math.ceil(state.totalRows / PAGE_SIZE));
@@ -436,13 +433,13 @@ function renderTable(rows) {
     tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No logs found for the current filters.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map(([ts, cid, level, msg]) => {
+  tbody.innerHTML = rows.map(([ts, cname, level, msg]) => {
     const lvl = (level || "").toLowerCase();
     const rowCls = lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "";
     const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
     return `<tr class="${rowCls}">
       <td class="td-ts">${formatTs(ts)}</td>
-      <td class="td-cid" title="${escHtml(cid)}">${escHtml(state.cidToNameMap?.[cid] || String(cid).slice(0, 12))}</td>
+      <td class="td-cid" title="${escHtml(cname)}">${escHtml(cname)}</td>
       <td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
       <td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>
     </tr>`;
@@ -459,8 +456,8 @@ function renderPagination(totalPages) {
 let chartVol = null, chartSev = null;
 async function loadAnalytics() {
   if (!window.Chart) return;
-  const cidFilter = state.selectedStack && state.stackContainers.length > 0
-    ? `AND container_id IN (${state.stackContainers.map(c => `'${esc(c)}'`).join(",")})`
+  const cidFilter = state.selectedStack && state.stackNames.length > 0
+    ? `AND container_name IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})`
     : "";
   try {
     const volData = await apiQuery(`
@@ -539,24 +536,17 @@ async function executeClear() {
 }
 
 // ── Export Panel ──────────────────────────────────────────────────────────────
-// Tracks which container_ids are selected for export
-let exportSelectedContainers = [];   // [ { id, label } ]
+// Tracks which container_names are selected for export
+let exportSelectedContainers = [];   // [ { name, label } ]
 
 function openExportPanel() {
   // Pre-fill with current context
   exportSelectedContainers = [];
 
-  if (state.selectedStack && state.stackContainers.length > 0) {
-    if (state.stackContainers.length === 1) {
-      // If we clicked a single container, just that one
-      const cid = state.stackContainers[0];
-      exportSelectedContainers = [{ id: cid, label: state.cidToNameMap?.[cid] || cid.slice(0, 12) }];
-    } else {
-      // If we selected a stack, add all in stack
-      exportSelectedContainers = state.stackContainers.map(id => ({
-        id: id, label: state.cidToNameMap?.[id] || id.slice(0, 12)
-      }));
-    }
+  if (state.selectedStack && state.stackNames.length > 0) {
+    exportSelectedContainers = state.stackNames.map(name => ({
+      name: name, label: name
+    }));
   }
 
   el("export-from").value = el("range-from").value || "";
@@ -578,12 +568,12 @@ function renderExportTags() {
     container.innerHTML = `<span class="export-all-tag">All containers (no filter)</span>`;
     return;
   }
-  exportSelectedContainers.forEach(({ id, label }) => {
+  exportSelectedContainers.forEach(({ name, label }) => {
     const tag = document.createElement("span");
     tag.className = "export-tag";
-    tag.innerHTML = `${escHtml(label)} <button class="export-tag-remove" data-id="${escHtml(id)}">&times;</button>`;
+    tag.innerHTML = `${escHtml(label)} <button class="export-tag-remove" data-name="${escHtml(name)}">&times;</button>`;
     tag.querySelector(".export-tag-remove").addEventListener("click", () => {
-      exportSelectedContainers = exportSelectedContainers.filter(c => c.id !== id);
+      exportSelectedContainers = exportSelectedContainers.filter(c => c.name !== name);
       renderExportTags();
     });
     container.appendChild(tag);
@@ -600,12 +590,12 @@ el("export-stack-search").addEventListener("input", () => {
   // Search stacks
   for (const [stackName, items] of Object.entries(folderDataMap)) {
     if (stackName.toLowerCase().includes(q))
-      matches.push({ type: "stack", label: `📁 ${stackName}`, ids: items.map(d => d.cid), name: stackName });
+      matches.push({ type: "stack", label: `📁 ${stackName}`, names: items.map(d => d.displayName), name: stackName });
   }
   // Search individual containers
-  lastSidebarRows.forEach(([cid, cname]) => {
-    if (cname.toLowerCase().includes(q) || cid.includes(q))
-      matches.push({ type: "container", label: `📦 ${cname || cid.slice(0, 12)}`, ids: [cid], name: cname || cid.slice(0, 12) });
+  lastSidebarRows.forEach(([cname]) => {
+    if (cname.toLowerCase().includes(q))
+      matches.push({ type: "container", label: `📦 ${cname}`, names: [cname], name: cname });
   });
 
   if (!matches.length) { results.innerHTML = `<div class="export-no-result">No matches</div>`; results.classList.remove("hidden"); return; }
@@ -616,13 +606,13 @@ el("export-stack-search").addEventListener("input", () => {
     item.className = "export-result-item";
     item.textContent = m.label;
     item.addEventListener("click", () => {
-      m.ids.forEach(id => {
-        if (!exportSelectedContainers.find(c => c.id === id))
-          exportSelectedContainers.push({ id, label: m.name });
+      m.names.forEach(name => {
+        if (!exportSelectedContainers.find(c => c.name === name))
+          exportSelectedContainers.push({ name, label: name });
       });
       renderExportTags();
       el("export-stack-search").value = "";
-      results.classList.add("hidden");
+      results.classList.remove("hidden");
     });
     results.appendChild(item);
   });
@@ -647,7 +637,7 @@ el("btn-export-confirm").addEventListener("click", async () => {
 
   const params = new URLSearchParams();
   if (exportSelectedContainers.length > 0)
-    params.set("container_ids", exportSelectedContainers.map(c => c.id).join(","));
+    params.set("container_names", exportSelectedContainers.map(c => c.name).join(","));
   if (!allTime && el("export-from").value)
     params.set("from_ts", el("export-from").value.replace("T", " ") + ":00");
   if (!allTime && el("export-to").value)
@@ -854,7 +844,7 @@ async function loadUserList(q = "") {
 
 // Container Ownership State
 let currentOwnership = [];
-let assignSelectedContainers = []; // [ { id, label } ]
+let assignSelectedContainers = []; // [ { name, label } ]
 
 async function loadOwnershipList() {
   try {
@@ -884,15 +874,19 @@ function renderOwnershipList() {
     return;
   }
 
-  list.innerHTML = rows.map(r => `
-    <div class="admin-ownership-row">
-      <span class="admin-cid" title="${escHtml(r.container_id)}">${r.container_id.slice(0, 12)}</span>
-      <span class="admin-arrow">→</span>
-      <span class="admin-uname">${escHtml(r.username)}</span>
-      <button class="btn-revoke btn-danger" data-cid="${escHtml(r.container_id)}" data-uid="${r.user_id}"
-              style="font-size:11px;padding:3px 8px;margin-left:auto;">Revoke</button>
-    </div>
-  `).join("");
+  list.innerHTML = rows.map(r => {
+    const displayName = r.container_name || r.container_id;
+    const cid = r.container_id || r.container_name;
+    return `
+      <div class="admin-ownership-row">
+        <span class="admin-uname" style="font-weight:600;">${escHtml(displayName)}</span>
+        <span class="admin-arrow">→</span>
+        <span class="admin-uname">${escHtml(r.username)}</span>
+        <button class="btn-revoke btn-danger" data-cid="${escHtml(cid)}" data-uid="${r.user_id}"
+                style="font-size:11px;padding:3px 8px;margin-left:auto;">Revoke</button>
+      </div>
+    `;
+  }).join("");
 
   list.querySelectorAll(".btn-revoke").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -931,13 +925,14 @@ el("container-assign-search").addEventListener("input", () => {
   const uid = el("assign-user-select").value;
   if (!q || !uid) { results.classList.add("hidden"); return; }
 
-  const ownedCids = currentOwnership.filter(r => String(r.user_id) === String(uid)).map(r => r.container_id);
+  const ownedIds = currentOwnership.filter(r => String(r.user_id) === String(uid)).map(r => r.container_id || r.container_name);
 
   const matches = [];
-  lastSidebarRows.forEach(([cid, cname]) => {
-    if (ownedCids.includes(cid) || assignSelectedContainers.find(c => c.id === cid)) return;
-    if (cname.toLowerCase().includes(q) || cid.includes(q)) {
-      matches.push({ type: "container", label: `📦 ${cname || cid.slice(0, 12)}`, id: cid, name: cname || cid.slice(0, 12) });
+  lastSidebarRows.forEach(row => {
+    const [cname] = row;
+    if (ownedIds.includes(cname) || assignSelectedContainers.find(c => c.id === cname)) return;
+    if (cname.toLowerCase().includes(q)) {
+      matches.push({ type: "container", label: `📦 ${cname}`, id: cname, name: cname });
     }
   });
 

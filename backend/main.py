@@ -1008,12 +1008,20 @@ async def update_setting(
 
 # ── Routes: Notifications ─────────────────────────────────────────────────────
 @app.get("/api/notifications")
-async def get_notifications(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_notifications(
+    type: Optional[str] = Query(default=None),
+    user=Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
     try:
-        result = await db.execute(text(
-            "SELECT id, type, severity, title, message, container_id, container_name, created_at, read_at "
-            "FROM notifications ORDER BY created_at DESC LIMIT 200"
-        ))
+        where = ""
+        params = {}
+        if type:
+            where = "AND type = :type"
+            params["type"] = type
+
+        sql = f"SELECT id, type, severity, title, message, container_id, container_name, created_at, read_at FROM notifications WHERE 1=1 {where} ORDER BY created_at DESC LIMIT 200"
+        result = await db.execute(text(sql), params)
         rows = result.fetchall()
 
         # If developer, restrict results to containers owned by the user
@@ -1035,6 +1043,27 @@ async def get_notifications(user=Depends(get_current_user), db: AsyncSession = D
     except Exception as e:
         log.exception("get_notifications error: %s", e)
         raise HTTPException(status_code=500, detail="Failed to load notifications")
+
+
+@app.delete("/api/notifications/{notif_id}")
+async def delete_notification(
+    notif_id: int,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a single notification."""
+    await db.execute(text("DELETE FROM notifications WHERE id = :id"), {"id": notif_id})
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/notifications/clear")
+async def clear_notifications(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Mark all notifications as read or delete them (depending on UI preference)."""
+    # For now, let's keep the 'Mark all read' logic but add a real delete all if you want
+    await db.execute(text("UPDATE notifications SET read_at = now() WHERE read_at IS NULL"))
+    await db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/debug/db")

@@ -155,15 +155,18 @@
           <div class="admin-card">
             <h3>📦 Container Ownership</h3>
             <p class="admin-hint">Assign containers to developers</p>
-            <div class="admin-search-row">
+            <div class="admin-search-row" style="position:relative;">
               <input type="search" id="container-assign-search" placeholder="Search containers..."
-                class="admin-search-input" />
+                class="admin-search-input" autocomplete="off" />
+              <div id="assign-container-results" class="export-stack-dropdown hidden"
+                style="width:100%; top:calc(100% + 4px);"></div>
               <select id="assign-user-select" class="admin-select">
                 <option value="">— Select user —</option>
               </select>
               <button id="btn-assign-container" class="btn-primary"
                 style="font-size:12px; padding:5px 10px;">Assign</button>
             </div>
+            <div id="assign-selected-tags" class="export-tags" style="margin-top:8px;"></div>
             <div id="ownership-list" class="admin-list" style="margin-top:12px;">
               <div class="admin-empty">Loading ownership...</div>
             </div>

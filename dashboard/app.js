@@ -30,6 +30,7 @@ let state = {
   settings: {},
   notifications: [],
   unreadCount: 0,
+  notifFilter: "all",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -734,18 +735,21 @@ function renderNotifications() {
   const list = el("notif-list");
   list.innerHTML = `
     <div class="notif-filter" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:10px;font-size:11px;">
-      <label><input type="radio" name="notif-filter" value="all" checked> All</label>
-      <label><input type="radio" name="notif-filter" value="container_down"> Downtime Only</label>
+      <label><input type="radio" name="notif-filter" value="all" ${state.notifFilter === "all" ? "checked" : ""}> All</label>
+      <label><input type="radio" name="notif-filter" value="container_down" ${state.notifFilter === "container_down" ? "checked" : ""}> Downtime</label>
+      <label><input type="radio" name="notif-filter" value="log_spam" ${state.notifFilter === "log_spam" ? "checked" : ""}> Spam/DDOS</label>
+      <label><input type="radio" name="notif-filter" value="container_recovered" ${state.notifFilter === "container_recovered" ? "checked" : ""}> Recovered</label>
     </div>
     <div id="notif-items-container">
-      ${renderNotifItems()}
+      ${renderNotifItems(state.notifFilter)}
     </div>
   `;
 
   // Filter events
   list.querySelectorAll('input[name="notif-filter"]').forEach(r => {
     r.addEventListener("change", () => {
-      el("notif-items-container").innerHTML = renderNotifItems(r.value);
+      state.notifFilter = r.value;
+      el("notif-items-container").innerHTML = renderNotifItems(state.notifFilter);
     });
   });
 }

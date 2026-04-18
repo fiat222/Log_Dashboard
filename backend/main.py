@@ -252,6 +252,13 @@ _compiled_patterns = [
 
 _last_notif_time: dict[str, float] = {}   # key → timestamp, throttle 60s per type
 NOTIF_COOLDOWN_SEC = 60
+_active_spam_alerts: set[str] = set()
+_active_down_alerts: set[str] = set()
+SPAM_REQ_PER_SEC_THRESHOLD = 8.0
+SPAM_COUNT_THRESHOLD = 240
+SPAM_DDOS_HIT_THRESHOLD = 6
+REQUEST_SPAM_THRESHOLD_PER_MIN = int(os.getenv("REQUEST_SPAM_THRESHOLD_PER_MIN", "120"))
+REQUEST_SPAM_ALERT_COOLDOWN_SEC = int(os.getenv("REQUEST_SPAM_ALERT_COOLDOWN_SEC", "120"))
 
 
 async def check_critical_logs():
@@ -315,18 +322,26 @@ async def check_critical_logs():
         log.debug("check_critical_logs error: %s", e)
 
 async def check_log_spam_anomalies():
-    """Detect if logs are spammed (High Requests/sec for a single pattern)."""
+    """Detect sustained spam/flood patterns with de-duplicated alerts."""
     try:
-        # Group by the first 30 chars of a cleaned message to capture the pattern.
-        # Calculate req_per_sec based on a 1-minute (60 seconds) window.
+        # Normalize message text and group per container to detect sustained floods.
+        # We require either:
+        # - very high request rate, or
+        # - high repeated volume with network/DDOS keywords.
         sql = (
-            "SELECT container_id, max(message) as sample_msg, count() as cnt, "
-            "floor(count() / 60) as req_per_sec, "
-            "substr(replaceRegexpAll(message, '[0-9\\:\\\.\\+\\-]+', ''), 1, 30) as grp "
+            "SELECT "
+            "container_id, "
+            "any(container_name) as container_name, "
+            "max(message) as sample_msg, "
+            "count() as cnt, "
+            "round(count() / 60.0, 2) as req_per_sec, "
+            "sum(match(lower(message), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
+            "substr(replaceRegexpAll(lower(message), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
             "FROM logs.container_logs "
             "WHERE timestamp > now() - INTERVAL 1 MINUTE "
             "GROUP BY container_id, grp "
-            "HAVING req_per_sec > 50 "
+            f"HAVING req_per_sec >= {SPAM_REQ_PER_SEC_THRESHOLD} "
+            f"OR (cnt >= {SPAM_COUNT_THRESHOLD} AND ddos_hits >= {SPAM_DDOS_HIT_THRESHOLD}) "
             "ORDER BY cnt DESC "
             "FORMAT JSONCompact"
         )
@@ -342,43 +357,56 @@ async def check_log_spam_anomalies():
                 rows = body.get("data", [])
         log.debug("check_log_spam_anomalies found %d candidate groups", len(rows))
 
+        current_spam_keys: set[str] = set()
         async with AsyncSessionLocal() as db:
             for row in rows:
-                cid, sample_msg, count, req_sec, grp = row[0], row[1], row[2], row[3], row[4]
+                cid, cname, sample_msg, count, req_sec, ddos_hits, grp = row
                 notif_key = f"spam_{cid}_{grp}"
+                current_spam_keys.add(notif_key)
+
+                # Alert once per active anomaly group; recover/reset when anomaly disappears.
+                if notif_key in _active_spam_alerts:
+                    continue
+
                 now = time.time()
-                
-                if now - _last_notif_time.get(notif_key, 0) < 60:
+                if now - _last_notif_time.get(notif_key, 0) < NOTIF_COOLDOWN_SEC:
                     continue
                 _last_notif_time[notif_key] = now
-                
-                title = "🚨 Rate Limit / Spam Detected"
-                msg = f"Volume: {req_sec} req/sec (Total {count}/min).\nSample: {sample_msg[:100]}..."
-                
+                _active_spam_alerts.add(notif_key)
+
+                ddos_note = "Likely DDOS/flood pattern." if int(ddos_hits or 0) > 0 else "Repeated spam pattern."
+                title = "🚨 Spam / DDOS Pattern Detected"
+                msg = (
+                    f"Container '{cname or cid}' is emitting abnormal volume: {req_sec} req/sec "
+                    f"({count}/min). {ddos_note} Sample: {str(sample_msg)[:120]}..."
+                )
+
                 await db.execute(text(
-                    "INSERT INTO notifications (type, severity, title, message, container_id) "
-                    "VALUES ('log_spam', 'critical', :title, :msg, :cid)"
-                ), {"title": title, "msg": msg, "cid": cid})
+                    "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+                    "VALUES ('log_spam', 'critical', :title, :msg, :cid, :cname)"
+                ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
                 await db.commit()
-                
+
                 await broadcast_notification({
                     "type": "log_spam", "severity": "critical",
-                    "title": title, "message": msg, "container_id": cid,
+                    "title": title, "message": msg, "container_id": cid, "container_name": cname,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
-                log.info("Emitted log_spam for container=%s grp=%s count=%d", cid, grp, count)
+                log.info("Emitted log_spam for container=%s(%s) grp=%s count=%d", cname, cid, grp, count)
+
+        # Reset state for groups that have recovered (so they can alert again later).
+        _active_spam_alerts.difference_update(_active_spam_alerts - current_spam_keys)
     except Exception as e:
         log.warning("check_log_spam_anomalies error: %s", e)
 
 async def check_container_downtime():
-    """Detect if a previously active container has sent no logs for 5 minutes."""
+    """Detect down/recover state; notify once per down event."""
     try:
         sql = (
-            "SELECT container_id, max(timestamp) as last_seen "
+            "SELECT container_id, any(container_name) as container_name, max(timestamp) as last_seen "
             "FROM logs.container_logs "
             "WHERE timestamp > now() - INTERVAL 1 HOUR "
             "GROUP BY container_id "
-            "HAVING last_seen < now() - INTERVAL 5 MINUTE "
             "FORMAT JSONCompact"
         )
         url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -390,30 +418,74 @@ async def check_container_downtime():
                 body = await resp.json(content_type=None)
                 rows = body.get("data", [])
 
+        currently_down: set[str] = set()
+        down_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
         async with AsyncSessionLocal() as db:
             for row in rows:
-                cid, last_seen = row[0], row[1]
-                notif_key = f"down_{cid}"
-                now = time.time()
-                
-                if now - _last_notif_time.get(notif_key, 0) < 300: # แจ้งเตือนซ้ำทุก 5 นาทีถ้ายังไม่ฟื้น
+                cid, cname, last_seen = row
+                if isinstance(last_seen, datetime):
+                    last_seen_dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+                else:
+                    last_seen_text = str(last_seen).strip().replace("Z", "+00:00").replace(" ", "T")
+                    try:
+                        last_seen_dt = datetime.fromisoformat(last_seen_text)
+                        if last_seen_dt.tzinfo is None:
+                            last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        log.debug("Invalid last_seen format for container=%s: %s", cid, last_seen)
+                        continue
+
+                is_down = last_seen_dt < down_threshold
+
+                if not is_down:
+                    if cid in _active_down_alerts:
+                        _active_down_alerts.discard(cid)
+                        title = "✅ Container Recovered"
+                        display_name = cname or cid
+                        msg = (
+                            f"Container '{display_name}' has recovered and resumed sending logs. "
+                            f"Latest seen: {last_seen}."
+                        )
+
+                        await db.execute(text(
+                            "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+                            "VALUES ('container_recovered', 'info', :title, :msg, :cid, :cname)"
+                        ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
+                        await db.commit()
+
+                        await broadcast_notification({
+                            "type": "container_recovered",
+                            "severity": "info",
+                            "title": title,
+                            "message": msg,
+                            "container_id": cid,
+                            "container_name": cname,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
                     continue
-                _last_notif_time[notif_key] = now
-                
+
+                currently_down.add(cid)
+                if cid in _active_down_alerts:
+                    continue
+                _active_down_alerts.add(cid)
+
                 title = "⚠️ Container Unresponsive / Down"
-                msg = f"Container '{cid}' has not sent any logs for over 5 minutes. Last seen: {last_seen}."
-                
+                display_name = cname or cid
+                msg = f"Container '{display_name}' has not sent any logs for over 5 minutes. Last seen: {last_seen}."
+
                 await db.execute(text(
-                    "INSERT INTO notifications (type, severity, title, message, container_id) "
-                    "VALUES ('container_down', 'critical', :title, :msg, :cid)"
-                ), {"title": title, "msg": msg, "cid": cid})
+                    "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+                    "VALUES ('container_down', 'critical', :title, :msg, :cid, :cname)"
+                ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
                 await db.commit()
-                
+
                 await broadcast_notification({
                     "type": "container_down", "severity": "critical",
-                    "title": title, "message": msg, "container_id": cid,
+                    "title": title, "message": msg, "container_id": cid, "container_name": cname,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
+        # Reset stale down states if container disappeared from current check window.
+        _active_down_alerts.intersection_update(currently_down)
     except Exception as e:
         log.warning("check_container_downtime error: %s", e)
 
@@ -506,6 +578,38 @@ async def rate_limit_api(request: Request):
     current = await redis_client.incr(key)
     if current == 1:
         await redis_client.expire(key, 60)
+
+    # Request-volume based spam detection (independent from log-content pattern detection).
+    if current >= REQUEST_SPAM_THRESHOLD_PER_MIN:
+        notif_key = f"request_spam:{ip}"
+        now = time.time()
+        last = _last_notif_time.get(notif_key, 0)
+        if now - last >= REQUEST_SPAM_ALERT_COOLDOWN_SEC:
+            _last_notif_time[notif_key] = now
+            title = "🚨 Request Spam Detected"
+            msg = (
+                f"High request volume from IP {ip}: {current} requests/min. "
+                f"Latest path: {request.url.path}"
+            )
+            try:
+                async with AsyncSessionLocal() as db:
+                    await db.execute(text(
+                        "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+                        "VALUES ('log_spam', 'critical', :title, :msg, :cid, :cname)"
+                    ), {"title": title, "msg": msg, "cid": "backend", "cname": "backend"})
+                    await db.commit()
+                await broadcast_notification({
+                    "type": "log_spam",
+                    "severity": "critical",
+                    "title": title,
+                    "message": msg,
+                    "container_id": "backend",
+                    "container_name": "backend",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception as e:
+                log.warning("request spam notification error: %s", e)
+
     if current > 100:
         raise HTTPException(status_code=429, detail="Too many API requests.")
 
@@ -882,12 +986,19 @@ async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db
     after a stress run.
     """
     sql = (
-        "SELECT container_id, max(message) as sample_msg, count() as cnt, "
-        "substr(replaceRegexpAll(message, '[0-9\\:\\\.\\+\\-]+', ''), 1, 30) as grp "
+        "SELECT "
+        "container_id, "
+        "any(container_name) as container_name, "
+        "max(message) as sample_msg, "
+        "count() as cnt, "
+        "round(count() / 60.0, 2) as req_per_sec, "
+        "sum(match(lower(message), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
+        "substr(replaceRegexpAll(lower(message), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
         "FROM logs.container_logs "
         "WHERE timestamp > now() - INTERVAL 1 MINUTE "
         "GROUP BY container_id, grp "
-        "HAVING cnt > 1 "
+        f"HAVING req_per_sec >= {SPAM_REQ_PER_SEC_THRESHOLD} "
+        f"OR (cnt >= {SPAM_COUNT_THRESHOLD} AND ddos_hits >= {SPAM_DDOS_HIT_THRESHOLD}) "
         "ORDER BY cnt DESC "
         "FORMAT JSONCompact"
     )
@@ -899,7 +1010,15 @@ async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db
             body = await resp.json(content_type=None) if resp.status == 200 else {"data": []}
             rows = body.get("data", [])
     # Return compact info for inspection
-    return [{"container_id": r[0], "sample": r[1][:200], "count": r[2], "grp": r[3]} for r in rows]
+    return [{
+        "container_id": r[0],
+        "container_name": r[1],
+        "sample": r[2][:200],
+        "count": r[3],
+        "req_per_sec": r[4],
+        "ddos_hits": r[5],
+        "grp": r[6]
+    } for r in rows]
 
 
 # ── Routes: Users & Roles ─────────────────────────────────────────────────────
@@ -1129,6 +1248,6 @@ async def notifications_stream(request: Request, user=Depends(get_current_user))
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
-@app.get("/api/health")
+@app.get("/api/health", dependencies=[Depends(rate_limit_api)])
 async def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}

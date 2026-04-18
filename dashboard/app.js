@@ -894,7 +894,7 @@ function renderOwnershipList() {
 
   list.querySelectorAll(".btn-revoke").forEach(btn => {
     btn.addEventListener("click", async () => {
-      await fetch(`${API_BASE}/admin/containers/assign?container_id=${encodeURIComponent(btn.dataset.cid)}&user_id=${btn.dataset.uid}`, { method: "DELETE", credentials: "include" });
+      await fetch(`${API_BASE}/admin/containers/assign?container_name=${encodeURIComponent(btn.dataset.cid)}&user_id=${btn.dataset.uid}`, { method: "DELETE", credentials: "include" });
       loadOwnershipList();
     });
   });
@@ -975,7 +975,7 @@ el("btn-assign-container").addEventListener("click", async () => {
       await fetch(`${API_BASE}/admin/containers/assign`, {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ container_id: c.id, user_id: uid }),
+        body: JSON.stringify({ container_name: c.id, user_id: uid }),
       });
     }
     assignSelectedContainers = [];

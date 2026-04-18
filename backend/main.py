@@ -254,6 +254,7 @@ _last_notif_time: dict[str, float] = {}   # key → timestamp, throttle 60s per 
 NOTIF_COOLDOWN_SEC = 60
 _active_spam_alerts: set[str] = set()
 _active_down_alerts: set[str] = set()
+_pending_phase2: dict[str, float] = {}
 SPAM_REQ_PER_SEC_THRESHOLD = 8.0
 SPAM_COUNT_THRESHOLD = 240
 SPAM_DDOS_HIT_THRESHOLD = 6
@@ -399,8 +400,57 @@ async def check_log_spam_anomalies():
     except Exception as e:
         log.warning("check_log_spam_anomalies error: %s", e)
 
+async def _is_container_running(container_name: str) -> bool:
+    """
+    Run `docker exec <container_name> true`.
+    Returns False only when daemon explicitly says container is not running.
+    Returns True on success OR any inconclusive result (timeout, no docker, etc.)
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", container_name, "true",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        stderr_text = stderr.decode(errors="replace").lower()
+        if "is not running" in stderr_text or "no such container" in stderr_text:
+            return False
+        return True
+    except asyncio.TimeoutError:
+        log.warning("docker exec timed out for container=%s", container_name)
+        return True  # inconclusive — don't false-alarm
+    except FileNotFoundError:
+        log.debug("docker binary not found, skipping exec check")
+        return True
+    except Exception as e:
+        log.debug("docker exec check error for %s: %s", container_name, e)
+        return True  # inconclusive
+
+
+# ── State tracking ────────────────────────────────────────────────────────────
+# _active_down_alerts  : containers currently in DOWN state (already notified)
+# _pending_phase2      : containers that looked silent in phase-1 but not yet
+#                        confirmed down — maps cid → timestamp of phase-1 check
+_active_down_alerts: set[str] = set()
+_pending_phase2: dict[str, float] = {}
+
 async def check_container_downtime():
-    """Detect down/recover state; notify once per down event."""
+    """
+    State-change-only notification logic:
+
+      UNKNOWN / UP  →  silent > 5 min  →  docker exec confirms NOT running
+                    →  transition to DOWN, notify once
+
+      DOWN          →  logs resume OR docker exec confirms running again
+                    →  transition to UP, notify once
+
+    Phase-2 exists only to avoid false-positives from log lag:
+      After silence is detected, docker exec is run immediately (phase-1).
+      If it says the container is not running → DOWN alert is sent right away.
+      5 minutes later a phase-2 exec runs to check for recovery.
+      No duplicate alerts are ever sent while the state has not changed.
+    """
     try:
         sql = (
             "SELECT container_id, any(container_name) as container_name, max(timestamp) as last_seen "
@@ -412,82 +462,129 @@ async def check_container_downtime():
         url = f"http://{CH_HOST}:{CH_PORT}/"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params={"query": sql},
-                                   headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+                                   headers={"X-ClickHouse-User": CH_USER,
+                                            "X-ClickHouse-Key": CH_PASS},
                                    timeout=10) as resp:
-                if resp.status != 200: return
+                if resp.status != 200:
+                    return
                 body = await resp.json(content_type=None)
                 rows = body.get("data", [])
 
-        currently_down: set[str] = set()
+        now = time.time()
         down_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+
         async with AsyncSessionLocal() as db:
             for row in rows:
                 cid, cname, last_seen = row
+                display = cname or cid
+
+                # ── Parse timestamp ───────────────────────────────────────
                 if isinstance(last_seen, datetime):
                     last_seen_dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
                 else:
-                    last_seen_text = str(last_seen).strip().replace("Z", "+00:00").replace(" ", "T")
+                    txt = str(last_seen).strip().replace("Z", "+00:00").replace(" ", "T")
                     try:
-                        last_seen_dt = datetime.fromisoformat(last_seen_text)
+                        last_seen_dt = datetime.fromisoformat(txt)
                         if last_seen_dt.tzinfo is None:
                             last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
                     except ValueError:
-                        log.debug("Invalid last_seen format for container=%s: %s", cid, last_seen)
+                        log.debug("Invalid last_seen for container=%s: %s", cid, last_seen)
                         continue
 
-                is_down = last_seen_dt < down_threshold
+                is_silent = last_seen_dt < down_threshold
+                is_currently_down = cid in _active_down_alerts
 
-                if not is_down:
-                    if cid in _active_down_alerts:
-                        _active_down_alerts.discard(cid)
-                        title = "✅ Container Recovered"
-                        display_name = cname or cid
-                        msg = (
-                            f"Container '{display_name}' has recovered and resumed sending logs. "
-                            f"Latest seen: {last_seen}."
-                        )
-
-                        await db.execute(text(
-                            "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
-                            "VALUES ('container_recovered', 'info', :title, :msg, :cid, :cname)"
-                        ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
-                        await db.commit()
-
-                        await broadcast_notification({
-                            "type": "container_recovered",
-                            "severity": "info",
-                            "title": title,
-                            "message": msg,
-                            "container_id": cid,
-                            "container_name": cname,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        })
+                # ═══════════════════════════════════════════════════════════
+                # Case A: logs are flowing — container looks healthy
+                # ═══════════════════════════════════════════════════════════
+                if not is_silent:
+                    if is_currently_down:
+                        # State change: DOWN → UP
+                        # Confirm with docker exec before celebrating
+                        if await _is_container_running(display):
+                            _active_down_alerts.discard(cid)
+                            _pending_phase2.pop(cid, None)
+                            await _notify_recovered(db, cid, cname, last_seen)
+                        # else: logs resumed but exec says still down — rare edge
+                        # case, leave state as DOWN, will re-evaluate next tick
+                    else:
+                        # Normal active container — clear any stale phase-2 entry
+                        _pending_phase2.pop(cid, None)
                     continue
 
-                currently_down.add(cid)
-                if cid in _active_down_alerts:
+                # ═══════════════════════════════════════════════════════════
+                # Case B: silent container — run through the two-phase check
+                # ═══════════════════════════════════════════════════════════
+
+                # Already confirmed DOWN — just run phase-2 recovery check
+                if is_currently_down:
+                    phase1_ts = _pending_phase2.get(cid)
+                    if phase1_ts and (now - phase1_ts) >= 300:
+                        _pending_phase2.pop(cid)
+                        if await _is_container_running(display):
+                            # Recovered between phase-1 and phase-2
+                            _active_down_alerts.discard(cid)
+                            await _notify_recovered(db, cid, cname, last_seen)
+                        # else: still down, state unchanged — no notification
                     continue
+
+                # Waiting for phase-2 but not yet DOWN-notified — shouldn't
+                # normally happen, but guard against it
+                if cid in _pending_phase2:
+                    continue
+
+                # ── Phase 1: first time we see silence — docker exec check ─
+                log.info("Silence detected for container=%s, running phase-1 docker exec", display)
+                if await _is_container_running(display):
+                    # Container is running fine — just not emitting logs
+                    # Don't alert, don't set pending; re-evaluate next tick
+                    log.debug("container=%s is running but silent — skipping alert", display)
+                    continue
+
+                # Confirmed NOT running → transition to DOWN
                 _active_down_alerts.add(cid)
+                _pending_phase2[cid] = now  # schedule phase-2 in ~5 min
 
-                title = "⚠️ Container Unresponsive / Down"
-                display_name = cname or cid
-                msg = f"Container '{display_name}' has not sent any logs for over 5 minutes. Last seen: {last_seen}."
-
+                title = "⚠️ Container Down"
+                msg = (
+                    f"Container '{display}' has stopped running "
+                    f"(confirmed via docker exec). Last log: {last_seen}."
+                )
+                log.info("DOWN alert: container=%s(%s)", display, cid)
                 await db.execute(text(
-                    "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+                    "INSERT INTO notifications "
+                    "(type, severity, title, message, container_id, container_name) "
                     "VALUES ('container_down', 'critical', :title, :msg, :cid, :cname)"
                 ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
                 await db.commit()
-
                 await broadcast_notification({
                     "type": "container_down", "severity": "critical",
-                    "title": title, "message": msg, "container_id": cid, "container_name": cname,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "title": title, "message": msg,
+                    "container_id": cid, "container_name": cname,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
-        # Reset stale down states if container disappeared from current check window.
-        _active_down_alerts.intersection_update(currently_down)
+
     except Exception as e:
         log.warning("check_container_downtime error: %s", e)
+
+async def _notify_recovered(db, cid: str, cname: str, last_seen):
+    """Send a single RECOVERED notification. Extracted to avoid duplication."""
+    display = cname or cid
+    title = "✅ Container Recovered"
+    msg = f"Container '{display}' is running again. Last log: {last_seen}."
+    log.info("RECOVERED alert: container=%s(%s)", display, cid)
+    await db.execute(text(
+        "INSERT INTO notifications "
+        "(type, severity, title, message, container_id, container_name) "
+        "VALUES ('container_recovered', 'info', :title, :msg, :cid, :cname)"
+    ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
+    await db.commit()
+    await broadcast_notification({
+        "type": "container_recovered", "severity": "info",
+        "title": title, "message": msg,
+        "container_id": cid, "container_name": cname,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
 
 async def check_and_assign_containers():
     """Auto-map PSU registry containers to users based on image_name parsing."""
@@ -1079,23 +1176,23 @@ async def assign_container(
     db: AsyncSession = Depends(get_db),
 ):
     await db.execute(text(
-        "INSERT INTO container_ownership (container_id, user_id) VALUES (:cid, :uid) "
+        "INSERT INTO container_ownership (container_name, user_id) VALUES (:cname, :uid) "
         "ON CONFLICT DO NOTHING"
-    ), {"cid": req.container_id, "uid": req.user_id})
+    ), {"cname": req.container_name, "uid": req.user_id})
     await db.commit()
     return {"ok": True}
 
 
 @app.delete("/api/admin/containers/assign")
 async def remove_container_assignment(
-    container_id: str = Query(...),
+    container_name: str = Query(...),
     user_id: int = Query(...),
     user=Depends(require_role("super_admin", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
     await db.execute(text(
-        "DELETE FROM container_ownership WHERE container_id = :cid AND user_id = :uid"
-    ), {"cid": container_id, "uid": user_id})
+        "DELETE FROM container_ownership WHERE container_name = :cname AND user_id = :uid"
+    ), {"cname": container_name, "uid": user_id})
     await db.commit()
     return {"ok": True}
 

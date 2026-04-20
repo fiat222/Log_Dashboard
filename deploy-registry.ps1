@@ -26,7 +26,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 3. Docker Login (GitLab PSU)
-$REGISTRY_DOMAIN = "gitlab.psu.ac.th:5050"
+# Extract domain from REGISTRY_PATH (everything before the first '/')
+$REGISTRY_DOMAIN = $REGISTRY_PATH.Split('/')[0]
+
 Write-Host "--- Logging into $REGISTRY_DOMAIN ---" -ForegroundColor Yellow
 Write-Host "If prompted, please use your PSU Passport (Student ID) and Password."
 docker login $REGISTRY_DOMAIN

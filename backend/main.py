@@ -122,9 +122,9 @@ INIT_STMTS = [
     """,
     """
     CREATE TABLE IF NOT EXISTS container_ownership (
-        container_name VARCHAR(255),
+        container_id VARCHAR(255),
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        PRIMARY KEY (container_name, user_id)
+        PRIMARY KEY (container_id, user_id)
     );
     """,
     """
@@ -171,23 +171,13 @@ async def init_db():
                     await conn.execute(text(stmt))
             log.info("Database initialized and schema up-to-date.")
 
-            # Seed test users (admin123 + dev123)
             async with AsyncSessionLocal() as session:
-                for username, role in [("admin123", "admin"), ("dev123", "developer")]:
-                    res = await session.execute(
-                        text("SELECT id FROM users WHERE username = :u"), {"u": username}
-                    )
-                    if not res.fetchone():
-                        await session.execute(text(
-                            "INSERT INTO users (username, password_hash, role, display_name) "
-                            "VALUES (:u, :p, :r, :d)"
-                        ), {
-                            "u": username,
-                            "p": pwd_ctx.hash("password123"),
-                            "r": role,
-                            "d": "Test Admin" if role == "admin" else "Test Developer",
-                        })
-                        log.info("Seeded user: %s (%s)", username, role)
+                # Cleanup legacy seeded test accounts if still present.
+                res = await session.execute(text(
+                    "DELETE FROM users WHERE username IN ('admin123', 'dev123')"
+                ))
+                if res.rowcount:
+                    log.info("Deleted %s legacy test user(s).", res.rowcount)
                 await session.commit()
             return
         except Exception as e:
@@ -608,17 +598,28 @@ async def check_and_assign_containers():
         # Parts: ["registry.in.psu.ac.th:443", "<username>", "<project>"]
         async with AsyncSessionLocal() as db:
             res = await db.execute(text("SELECT id, username FROM users"))
-            users_map = {row[1]: row[0] for row in res.fetchall()}
+            users_map = {}
+            for uid, uname in res.fetchall():
+                if not uname:
+                    continue
+                uname_norm = str(uname).strip().lower()
+                if not uname_norm:
+                    continue
+                # Support both full SSO username (e.g. student@email.psu.ac.th)
+                # and registry segment format (e.g. student) for auto-assignment.
+                users_map.setdefault(uname_norm, uid)
+                if "@" in uname_norm:
+                    users_map.setdefault(uname_norm.split("@", 1)[0], uid)
             
             for row in rows:
                 cname, image_name = row[0], row[1]
                 parts = image_name.split('/')
                 if len(parts) >= 3:
-                    username = parts[1]
+                    username = parts[1].strip().lower()
                     uid = users_map.get(username)
                     if uid:
                         await db.execute(text(
-                            "INSERT INTO container_ownership (container_name, user_id) "
+                            "INSERT INTO container_ownership (container_id, user_id) "
                             "VALUES (:cname, :uid) "
                             "ON CONFLICT DO NOTHING"
                         ), {"cname": cname, "uid": uid})
@@ -867,27 +868,31 @@ async def sso_callback(code: str = Query(...), response: Response = None, db: As
         )
         userinfo = userinfo_resp.json()
 
-    sub      = userinfo.get("sub")
-    username = userinfo.get("preferred_username") or userinfo.get("name") or sub
-    email    = userinfo.get("email", "")
+    sub = userinfo.get("sub")
+    raw_name = userinfo.get("preferred_username") or userinfo.get("name") or sub
+    username = str(raw_name).split("@")[0]
+    email = userinfo.get("email", "")
+    # Prefer display_name from SSO, fallback to cleaned username
+    display_name = userinfo.get("display_name") or userinfo.get("name") or username
 
     # Upsert user (role = developer by default for new SSO users)
+    # We now also save and update the display_name from SSO
     result = await db.execute(text(
-        "INSERT INTO users (authentik_sub, username, email, role) "
-        "VALUES (:sub, :username, :email, 'developer') "
+        "INSERT INTO users (authentik_sub, username, email, display_name, role) "
+        "VALUES (:sub, :username, :email, :display_name, 'developer') "
         "ON CONFLICT (authentik_sub) DO UPDATE "
-        "SET username=EXCLUDED.username, email=EXCLUDED.email "
-        "RETURNING id, role"
-    ), {"sub": sub, "username": username, "email": email})
+        "SET username=EXCLUDED.username, email=EXCLUDED.email, display_name=EXCLUDED.display_name "
+        "RETURNING id, role, display_name"
+    ), {"sub": sub, "username": username, "email": email, "display_name": display_name})
     row = result.fetchone()
     await db.commit()
-    user_id, role = row[0], row[1]
+    user_id, role, final_display_name = row[0], row[1], row[2]
 
     access_token = create_access_token({
         "sub": username,
         "role": role,
         "user_id": user_id,
-        "display_name": username,
+        "display_name": final_display_name,
     })
     resp = RedirectResponse(url="/logstore/", status_code=302)
     resp.set_cookie("access_token", access_token, httponly=True, samesite="lax", max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600, path="/")
@@ -908,7 +913,7 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
     modified_q = q
     if user.get("role") == "developer":
         result = await db.execute(text(
-            "SELECT container_name FROM container_ownership WHERE user_id = :uid"
+            "SELECT container_id FROM container_ownership WHERE user_id = :uid"
         ), {"uid": user.get("user_id")})
         owned = [row[0] for row in result.fetchall()]
         if not owned:
@@ -1166,7 +1171,7 @@ async def get_ownership(user=Depends(require_role("super_admin", "admin")),
         "ORDER BY co.container_id"
     ))
     rows = result.fetchall()
-    return [{"container_id": r[0], "user_id": r[1], "username": r[2], "role": r[3]} for r in rows]
+    return [{"container_id": r[0], "container_name": r[0], "user_id": r[1], "username": r[2], "role": r[3]} for r in rows]
 
 
 @app.post("/api/admin/containers/assign")
@@ -1176,7 +1181,7 @@ async def assign_container(
     db: AsyncSession = Depends(get_db),
 ):
     await db.execute(text(
-        "INSERT INTO container_ownership (container_name, user_id) VALUES (:cname, :uid) "
+        "INSERT INTO container_ownership (container_id, user_id) VALUES (:cname, :uid) "
         "ON CONFLICT DO NOTHING"
     ), {"cname": req.container_name, "uid": req.user_id})
     await db.commit()
@@ -1191,7 +1196,7 @@ async def remove_container_assignment(
     db: AsyncSession = Depends(get_db),
 ):
     await db.execute(text(
-        "DELETE FROM container_ownership WHERE container_name = :cname AND user_id = :uid"
+        "DELETE FROM container_ownership WHERE container_id = :cname AND user_id = :uid"
     ), {"cname": container_name, "uid": user_id})
     await db.commit()
     return {"ok": True}

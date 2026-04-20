@@ -59,15 +59,27 @@ function formatTs(ts) {
 async function checkAuth() {
   try {
     const res = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
+    console.log("[SSO/AUTH] /auth/me response", {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      redirected: res.redirected,
+      url: res.url,
+      type: res.type,
+      headers: Object.fromEntries(res.headers.entries()),
+    });
     if (res.status === 401) {
+      console.log("[SSO/AUTH] unauthenticated, redirecting to /logstore/login");
       window.location.href = "/logstore/login";
       return false;
     }
     state.user = await res.json();
+    console.log("[SSO/AUTH] session payload (/auth/me)", state.user);
     renderUserPill();
     applyRoleUI();
     return true;
-  } catch {
+  } catch (err) {
+    console.log("[SSO/AUTH] checkAuth error", err);
     // If backend is down, fall through with limited functionality
     console.warn("Backend unreachable, running in limited mode");
     return true;
@@ -90,7 +102,7 @@ function renderUserPill() {
   badge.textContent = u.role === "super_admin" ? "Super Admin"
     : u.role === "admin" ? "Admin"
       : "Developer";
-  nameEl.textContent = u.display_name || u.username;
+  nameEl.textContent = u.username;
   pill.style.display = "flex";
   const logoutBtn = el("btn-logout");
   if (logoutBtn) logoutBtn.style.display = "inline-flex";
@@ -972,17 +984,21 @@ el("btn-assign-container").addEventListener("click", async () => {
 
   try {
     for (const c of assignSelectedContainers) {
-      await fetch(`${API_BASE}/admin/containers/assign`, {
+      const res = await fetch(`${API_BASE}/admin/containers/assign`, {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ container_name: c.id, user_id: uid }),
       });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg || `Assign failed for ${c.id}`);
+      }
     }
     assignSelectedContainers = [];
     renderAssignTags();
     loadOwnershipList();
-  } catch {
-    alert("Failed to assign some containers.");
+  } catch (err) {
+    alert(`Failed to assign some containers.\n${err?.message || ""}`.trim());
   } finally {
     el("btn-assign-container").disabled = false;
     el("btn-assign-container").textContent = "Assign Containers";

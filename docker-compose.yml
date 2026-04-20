@@ -212,22 +212,19 @@ services:
 
   # ── Log Dashboard (Nginx) ──────────────────────────────────────────────────
   log-dashboard:
-    image: nginx:1.25
+    build: ./dashboard
     container_name: log-dashboard
     restart: unless-stopped
     networks: [ pipeline ]
     ports:
       - "80:80"
-    volumes:
-      - ./dashboard:/usr/share/nginx/html:ro
-      - ./dashboard/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     environment:
       CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
     depends_on:
       - backend
       - clickhouse
     healthcheck:
-      test: ["CMD", "service", "nginx", "status"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3

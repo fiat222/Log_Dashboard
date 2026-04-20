@@ -5,8 +5,12 @@
 name: logdashboard
 
 networks:
-  pipeline:
+  pipeline_network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: "10.0.1.0/24"
 
 volumes:
   redis_data:
@@ -24,9 +28,9 @@ services:
     container_name: traefik
     restart: unless-stopped
     networks: [ pipeline ]
-    ports:
-      - "8443:443"
-      - "8090:8080"
+    # ports:  # Production: disable Traefik dashboard external access
+    #   - "8443:443"
+    #   - "8090:8080"
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -35,7 +39,7 @@ services:
       - "traefik.http.routers.traefik-dashboard.rule=Host(`localhost`)"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      test: [ "CMD", "traefik", "healthcheck", "--ping" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -89,9 +93,9 @@ services:
     container_name: clickhouse
     restart: unless-stopped
     networks: [ pipeline ]
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+    # ports:  # Production: no direct access — nginx proxies /clickhouse/ internally
+    #   - "8123:8123"
+    #   - "9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
@@ -157,7 +161,7 @@ services:
       clickhouse:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import os; exit(0)"]
+      test: [ "CMD", "python3", "-c", "import os; exit(0)" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -200,7 +204,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/logstore/api/auth/me"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/logstore/api/auth/me" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -224,7 +228,7 @@ services:
       - backend
       - clickhouse
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost/health" ]
       interval: 30s
       timeout: 10s
       retries: 3

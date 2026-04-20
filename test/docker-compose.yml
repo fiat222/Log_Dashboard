@@ -1,7 +1,0 @@
-name: test
-
-services:
-  stress-test:
-    build: .
-    network_mode: "host" # เพื่อให้ยิงเข้า http://localhost ได้ทันที
-    container_name: logs_stress_test

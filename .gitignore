@@ -58,3 +58,14 @@ Thumbs.db
 
 # document
 log_pipeline_project.docx
+
+context.md
+.antigravity/
+FileBeat/
+
+# SSL Certificates
+ssl/
+certs/
+*.crt
+*.key
+*.pem

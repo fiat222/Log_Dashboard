@@ -194,7 +194,7 @@ function buildWhere(includeStack = true) {
   if (state.search) parts.push(`message ILIKE '%${escLike(state.search)}%'`);
   if (state.fromDate) parts.push(`timestamp >= '${state.fromDate}:00'`);
   if (state.toDate) parts.push(`timestamp <= '${state.toDate}:00'`);
-  
+
   // DEFAULT: If no dates are selected, always restrict to last 24h 
   // to avoid scanning the entire database history (Heavy full-table scan).
   if (!state.fromDate && !state.toDate) {
@@ -1389,17 +1389,17 @@ function init() {
     if (backupBtn) {
       backupBtn.addEventListener("click", async () => {
         if (!confirm("คุณต้องการเริ่มกระบวนการ Backup ทันทีหรือไม่?\n(PostgreSQL + ClickHouse)")) return;
-        
+
         backupBtn.disabled = true;
         backupBtn.textContent = "⏳ Processing...";
-        
+
         try {
           const res = await fetch(`${API_BASE}/admin/backup/trigger`, {
             method: "POST",
             credentials: "include"
           });
           if (res.ok) {
-            alert("🚀 Backup started!\nระบบกำลังทำงานในพื้นหลัง (Background)\nไฟล์จะถูกเก็บไว้ใน volume: backup_data");
+            alert("🚀 Backup started!\nระบบกำลังทำงานในพื้นหลัง (Background)\nไฟล์จะถูกเก็บไว้ใน /mnt");
           } else {
             const data = await res.json().catch(() => ({}));
             alert(`❌ Backup failed: ${data.detail || "Unknown error"}`);

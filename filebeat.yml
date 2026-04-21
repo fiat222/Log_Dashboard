@@ -22,12 +22,23 @@ filebeat.inputs:
 
 # ── Processors: enrich every event ───────────────────────────────────────────
 processors:
+
+  # ยกเว้น container ที่ไม่ต้องการเก็บ log (เช่น ตัว filebeat เอง หรือ redis)
+  #- drop_event:
+  #    when:
+  #      or:
+  #        - contains:
+  #            docker.container.name: "filebeat_sender"
+  #        - contains:
+  #            docker.container.name: "redis"
+
   # 1. Add Docker container metadata (name, image, labels) to every event.
   - add_docker_metadata:
       host: "unix:///var/run/docker.sock"
       match_fields: ["host.name"]
       # Fields added: docker.container.id, docker.container.name,
       #               docker.container.image.name, docker.container.labels.*
+
 
   # 2. Extract and serialize Docker labels as JSON
   - script:
@@ -65,7 +76,6 @@ processors:
           }
         }
 
-
   - rename:
       fields:
         - from: "docker.container.id"
@@ -102,7 +112,3 @@ queue.mem:
 logging.level: warning     # Reduce noise; change to info to debug pipeline issues
 logging.to_files: false    # Let Docker capture Filebeat's own logs
 
-# ── Monitoring: expose metrics for Prometheus ─────────────────────────────────
-http.enabled: true
-http.host: "0.0.0.0"
-http.port: 5066            # Prometheus can scrape /stats endpoint here

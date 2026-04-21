@@ -181,13 +181,17 @@ body {
   transition: all 0.2s;
   white-space: nowrap;
 }
+
 .btn-logout:hover {
   background: #f43f5e;
   color: #fff;
   border-color: #f43f5e;
   box-shadow: 0 4px 12px rgba(244, 63, 94, 0.3);
 }
-.btn-logout:active { transform: scale(0.95); }
+
+.btn-logout:active {
+  transform: scale(0.95);
+}
 
 .sidebar-legend {
   display: flex;
@@ -520,7 +524,98 @@ body {
   letter-spacing: 0.05em;
 }
 
+/* ---date time-------*/
+
+/* --- DateTime group wrapper --- */
+.custom-dt-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.custom-dt-group>label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+/* --- The unified input row --- */
+.custom-datetime {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  overflow: hidden;
+  /* clips children to the rounded box */
+  height: 34px;
+  background: var(--bg-input, #fff);
+}
+
+.custom-datetime:focus-within {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+/* --- Date input --- */
+.custom-datetime input[type="date"] {
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0 8px;
+  height: 100%;
+  font-size: 13px;
+  color: var(--text);
+  width: 130px;
+}
+
+/* --- Divider between date and time --- */
+.custom-datetime .dt-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border, #d1d5db);
+  flex-shrink: 0;
+}
+
+/* --- Time portion --- */
+.time-select {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  font-family: var(--mono, monospace);
+  width: 42px;
+  min-width: 0;
+  height: 100%;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/*.time-sep {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-dim);
+  line-height: 1;
+  user-select: none;
+  margin: 0 1px;       tighten the colon spacing too
+}*/
+
+.time-select-group {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  /* was 0 6px */
+  gap: 0;
+  /* was 2px */
+}
+
 /* ── Notification Bell ────────────────────────────────────── */
+
 .notif-bell-wrapper {
   position: relative;
   margin-left: 6px;

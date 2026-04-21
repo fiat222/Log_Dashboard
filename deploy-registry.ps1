@@ -52,16 +52,16 @@ foreach ($svc in $services) {
     }
 
     # Build
-    Write-Host "Building image..."
-    docker build -t "$imageName:latest" "./$svc"
+    Write-Host "Running: docker build -t ${imageName}:latest $svc" -ForegroundColor Gray
+    docker build -t "${imageName}:latest" $svc
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Build failed for $svc"
         exit 1
     }
 
     # Push
-    Write-Host "Pushing to registry..."
-    docker push "$imageName:latest"
+    Write-Host "Running: docker push ${imageName}:latest" -ForegroundColor Gray
+    docker push "${imageName}:latest"
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Push failed for $svc"
         exit 1

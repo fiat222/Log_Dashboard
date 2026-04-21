@@ -24,10 +24,11 @@ services:
 
   # ── Traefik ────────────────────────────────────────────────────────────────
   traefik:
+    #image: ${REGISTRY_IMAGE_PATH}/traefik:v3.0
     image: traefik:v3.0
     container_name: traefik
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     # ports:  # Production: disable Traefik dashboard external access
     #   - "8443:443"
     #   - "8090:8080"
@@ -51,16 +52,15 @@ services:
 
   # ── PostgreSQL (user management, roles, settings) ─────────────────────────
   postgres:
+    #image: ${REGISTRY_IMAGE_PATH}/postgres:16-alpine
     image: postgres:16-alpine
     container_name: postgres
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      POSTGRES_DB: logdash
-      POSTGRES_USER: loguser
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+    env_file:
+      - .env
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U loguser -d logdash" ]
       interval: 10s
@@ -70,10 +70,11 @@ services:
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
+    #image: ${REGISTRY_IMAGE_PATH}/redis:7.2
     image: redis:7.2
     container_name: redis
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     ports:
       - "6379:6379"
     volumes:
@@ -89,10 +90,11 @@ services:
 
   # ── ClickHouse ────────────────────────────────────────────────────────────
   clickhouse:
+    #image: ${REGISTRY_IMAGE_PATH}/clickhouse-server:24.3-alpine
     image: clickhouse/clickhouse-server:24.3-alpine
     container_name: clickhouse
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     # ports:  # Production: no direct access — nginx proxies /clickhouse/ internally
     #   - "8123:8123"
     #   - "9000:9000"
@@ -101,11 +103,8 @@ services:
       - clickhouse_logs:/var/log/clickhouse-server
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - backup_data:/var/lib/clickhouse/user_files/backups
-    environment:
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: loguser
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    env_file:
+      - .env
     healthcheck:
       test: [ "CMD", "clickhouse-client", "--query", "SELECT 1" ]
       interval: 15s
@@ -115,10 +114,11 @@ services:
 
   # ── Filebeat ───────────────────────────────────────────────────────────────
   filebeat:
+    #image: ${REGISTRY_IMAGE_PATH}/filebeat:8.13.0
     image: docker.elastic.co/beats/filebeat:8.13.0
     container_name: filebeat
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     user: root
     command: >
       bash -c "cp /tmp/filebeat.yml /usr/share/filebeat/filebeat.yml && chmod go-w /usr/share/filebeat/filebeat.yml && filebeat -e -c /usr/share/filebeat/filebeat.yml"
@@ -127,8 +127,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - DOCKER_API_VERSION=1.44
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
@@ -140,22 +141,13 @@ services:
 
   # ── Log Ingester ───────────────────────────────────────────────────────────
   log-ingester:
-    image: ${REGISTRY_IMAGE_PATH}/ingester:latest
+    #image: ${REGISTRY_IMAGE_PATH}/ingester:latest
     build: ./ingester
     container_name: log-ingester
     restart: unless-stopped
-    networks: [ pipeline ]
-    environment:
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_KEY: filebeat
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: loguser
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
-      BATCH_SIZE: "200"
-      FLUSH_INTERVAL: "3"
+    networks: [ pipeline_network ]
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
@@ -174,30 +166,13 @@ services:
 
   # ── FastAPI Backend ────────────────────────────────────────────────────────
   backend:
-    image: ${REGISTRY_IMAGE_PATH}/backend:latest
+    #image: ${REGISTRY_IMAGE_PATH}/backend:latest
     build: ./backend
     container_name: backend
     restart: unless-stopped
-    networks: [ pipeline ]
-    environment:
-      DATABASE_URL: "postgresql+asyncpg://loguser:${POSTGRES_PASSWORD:-changeme}@postgres:5432/logdash"
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: loguser
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
-      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-please-change-this-jwt-secret}"
-      SUPER_ADMIN_USERNAME: "${SUPER_ADMIN_USERNAME:-superadmin}"
-      SUPER_ADMIN_PASSWORD: "${SUPER_ADMIN_PASSWORD:-changeme_superadmin}"
-      # PSU SSO (fill in when credentials available)
-      AUTHENTIK_BASE_URL: "${AUTHENTIK_BASE_URL:-https://sso.psu.ac.th}"
-      AUTHENTIK_CLIENT_ID: "${AUTHENTIK_CLIENT_ID:-}"
-      AUTHENTIK_CLIENT_SECRET: "${AUTHENTIK_CLIENT_SECRET:-}"
-      AUTHENTIK_REDIRECT_URI: "${AUTHENTIK_REDIRECT_URI:-https://monitor-eila.psu.ac.th/logstore/auth/callback}"
-      APP_BASE_PATH: "/logstore"
-      REDIS_HOST: redis
-      # Webhook URL (Line / Slack / Discord)
-      WEBHOOK_URL: "${WEBHOOK_URL:-}"
+    networks: [ pipeline_network ]
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -218,15 +193,16 @@ services:
 
   # ── Log Dashboard (Nginx) ──────────────────────────────────────────────────
   log-dashboard:
-    image: ${REGISTRY_IMAGE_PATH}/dashboard:latest
+    #image: ${REGISTRY_IMAGE_PATH}/dashboard:latest
     build: ./dashboard
     container_name: log-dashboard
     restart: unless-stopped
-    networks: [ pipeline ]
+    networks: [ pipeline_network ]
     ports:
+      #- "8801:80"
       - "80:80"
-    environment:
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
+    env_file:
+      - .env
     depends_on:
       - backend
       - clickhouse
@@ -243,18 +219,13 @@ services:
 
   # ── Backup Cron Service ──────────────────────────────────────────────────
   backup:
-    image: ${REGISTRY_IMAGE_PATH}/backup:latest
+    #image: ${REGISTRY_IMAGE_PATH}/backup:latest
     build: ./backup
     container_name: backup
     restart: unless-stopped
-    networks: [ pipeline ]
-    environment:
-      POSTGRES_USER: loguser
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
-      POSTGRES_DB: logdash
-      CLICKHOUSE_USER: loguser
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-changeme}"
-      CLICKHOUSE_DB: logs
+    networks: [ pipeline_network ]
+    env_file:
+      - .env
     volumes:
       - backup_data:/backups
       - backup_data:/clickhouse_user_files/backups

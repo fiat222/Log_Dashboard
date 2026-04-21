@@ -213,13 +213,40 @@
               <option value="ASC">Oldest first</option>
             </select>
           </div>
-          <div class="filter-group">
-            <label for="range-from">From</label>
-            <input id="range-from" type="datetime-local" />
+          <div class="filter-group custom-dt-group">
+            <label>From</label>
+            <div class="custom-datetime">
+              <input id="range-from-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="range-from-hour" class="time-select"></select>
+                  <span class="time-label">Hour</span>
+                </div>
+                <!--<span class="time-sep">:</span>-->
+                <div class="time-col">
+                  <select id="range-from-minute" class="time-select"></select>
+                  <span class="time-label">Minute</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="filter-group">
-            <label for="range-to">To</label>
-            <input id="range-to" type="datetime-local" />
+          <div class="filter-group custom-dt-group">
+            <label>To</label>
+            <div class="custom-datetime">
+              <input id="range-to-date" type="date" />
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="range-to-hour" class="time-select"></select>
+                  <span class="time-label">Hour</span>
+                </div>
+                <!--<span class="time-sep">:</span>-->
+                <div class="time-col">
+                  <select id="range-to-minute" class="time-select"></select>
+                  <span class="time-label">Minute</span>
+                </div>
+              </div>
+            </div>
           </div>
           <button id="btn-apply" class="btn-primary">Apply</button>
           <button id="btn-reset" class="btn-ghost">Reset</button>
@@ -290,18 +317,34 @@
         <div id="export-stack-results" class="export-stack-dropdown hidden"></div>
         <div id="export-selected-tags" class="export-tags"></div>
       </div>
-
-      <div style="display:flex; gap:16px; margin-bottom:16px;">
+      <div style="display:flex; flex-direction:column; gap:16px; margin-bottom:16px; width: 100%;">
         <div style="flex:1;">
           <label class="modal-field-label">From</label>
-          <input type="datetime-local" id="export-from" class="export-dt-input" />
+          <div class="custom-datetime">
+            <input id="export-from-date" type="date" />
+            <span class="dt-divider"></span>
+            <div class="time-select-group">
+              <select id="export-from-hour" class="time-select"></select>
+              <span class="time-label">Hour</span>
+              <select id="export-from-minute" class="time-select"></select>
+              <span class="time-label">Minute</span>
+            </div>
+          </div>
         </div>
         <div style="flex:1;">
           <label class="modal-field-label">To</label>
-          <input type="datetime-local" id="export-to" class="export-dt-input" />
+          <div class="custom-datetime">
+            <input id="export-to-date" type="date" />
+            <span class="dt-divider"></span>
+            <div class="time-select-group">
+              <select id="export-to-hour" class="time-select"></select>
+              <span class="time-label">Hour</span>
+              <select id="export-to-minute" class="time-select"></select>
+              <span class="time-label">Minute</span>
+            </div>
+          </div>
         </div>
       </div>
-
       <label
         style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-dim); margin-bottom:20px; cursor:pointer;">
         <input type="checkbox" id="export-all-time" style="accent-color:var(--accent);" />

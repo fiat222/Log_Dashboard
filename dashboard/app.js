@@ -55,6 +55,33 @@ function formatTs(ts) {
   } catch { return String(ts); }
 }
 
+function toLocalISO(date) {
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60000);
+  return localDate.toISOString().slice(0, 19);
+}
+function getCustomDateTime(prefix) {
+  const d = el(`${prefix}-date`).value;
+  if (!d) return null;
+  const h = el(`${prefix}-hour`).value || "00";
+  const m = el(`${prefix}-minute`).value || "00";
+  return `${d}T${h}:${m}`; // Do not append :00 since buildWhere appends it
+}
+function setCustomDateTime(prefix, dateStr) {
+  if (!dateStr) {
+    el(`${prefix}-date`).value = "";
+    el(`${prefix}-hour`).value = "00";
+    el(`${prefix}-minute`).value = "00";
+    return;
+  }
+  const iso = dateStr.includes("Z") ? toLocalISO(new Date(dateStr)) : dateStr.slice(0, 19);
+  const [dp, tp] = iso.split("T");
+  el(`${prefix}-date`).value = dp;
+  const [h, m] = tp.split(":");
+  el(`${prefix}-hour`).value = h;
+  el(`${prefix}-minute`).value = m;
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 async function checkAuth() {
   try {
@@ -200,12 +227,26 @@ const STORAGE = {
     } catch { return { "⭐ Watched": [] }; }
   },
   saveStacks: s => localStorage.setItem("logpipe_custom_stacks", JSON.stringify(s)),
-  getAliases: () => { try { return JSON.parse(localStorage.getItem("logpipe_aliases") || "{}"); } catch { return {}; } },
-  saveAliases: a => localStorage.setItem("logpipe_aliases", JSON.stringify(a)),
 };
+
+let containerAliases = {};
+
+async function loadContainerAliases() {
+  try {
+    const res = await fetch(`${API_BASE}/user/containers`, { credentials: "include" });
+    if (res.ok) {
+      const data = await res.json();
+      containerAliases = {};
+      data.forEach(d => {
+        if (d.custom_name) containerAliases[d.container_name] = d.custom_name;
+      });
+    }
+  } catch (e) { console.error("Error loading container aliases", e); }
+}
 
 let lastSidebarRows = [];
 let folderDataMap = {};
+let openStacks = new Set();   // tracks manually-opened stacks across re-renders
 
 async function loadContainerList() {
   try {
@@ -233,7 +274,6 @@ function renderSidebar() {
   folderList.innerHTML = "";
   folderDataMap = {};
   const customStacks = STORAGE.getStacks();
-  const aliases = STORAGE.getAliases();
 
   const allItem = document.createElement("div");
   allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
@@ -256,21 +296,21 @@ function renderSidebar() {
     const ageSec = (now - new Date(lastSeen).getTime()) / 1000;
     const dot = ageSec < dotThresholds.green ? "green"
       : ageSec < dotThresholds.amber ? "amber" : "red";
-    let displayName = cname;
-    const itemData = { displayName, dot, errorCount };
-    const displayProject = aliases[rawProject] || rawProject;
-    if (!folderDataMap[displayProject]) folderDataMap[displayProject] = [];
-    folderDataMap[displayProject].push(itemData);
+    let displayName = containerAliases[cname] || cname;
+    const itemData = { displayName, cname, dot, errorCount };
+    const displayProject = rawProject;
+    if (!folderDataMap[displayProject]) folderDataMap[displayProject] = { items: [], rawProject };
+    folderDataMap[displayProject].items.push(itemData);
     for (const [stackName, names] of Object.entries(customStacks)) {
       if (names.includes(cname)) {
-        if (!folderDataMap[stackName]) folderDataMap[stackName] = [];
-        folderDataMap[stackName].push(itemData);
+        if (!folderDataMap[stackName]) folderDataMap[stackName] = { items: [], rawProject: null };
+        folderDataMap[stackName].items.push(itemData);
       }
     }
   });
 
   for (const stackName of Object.keys(customStacks))
-    if (!folderDataMap[stackName]) folderDataMap[stackName] = [];
+    if (!folderDataMap[stackName]) folderDataMap[stackName] = { items: [], rawProject: null };
 
   const sortedNames = Object.keys(folderDataMap).sort((a, b) => {
     if (a === "⭐ Watched") return -1;
@@ -281,8 +321,11 @@ function renderSidebar() {
   sortedNames.forEach(stackName => {
     const group = document.createElement("div");
     const isActive = stackName === state.selectedStack;
-    const isOpen = stackName === "⭐ Watched" || isActive;
+    // Always open: the active stack, ⭐ Watched, or any stack the user manually expanded
+    if (isActive) openStacks.add(stackName);
+    const isOpen = stackName === "⭐ Watched" || openStacks.has(stackName);
     const isCustom = !!customStacks[stackName];
+    const { items: stackItems, rawProject } = folderDataMap[stackName];
     group.className = "folder-group " + (isOpen ? "open" : "") + (isActive ? " active-stack" : "");
 
     group.innerHTML = `
@@ -302,12 +345,12 @@ function renderSidebar() {
 
     const renderItems = () => {
       childrenContainer.innerHTML = "";
-      if (!folderDataMap[stackName].length) {
+      if (!stackItems.length) {
         childrenContainer.innerHTML = `<div class="empty-watched" style="padding-left:0;font-size:11px;">Empty Stack</div>`;
         return;
       }
-      folderDataMap[stackName].forEach(data => {
-        childrenContainer.appendChild(makeContainerItem(data.displayName, data.dot, data.errorCount));
+      stackItems.forEach(data => {
+        childrenContainer.appendChild(makeContainerItem(data.displayName, data.cname, data.dot, data.errorCount));
       });
       childrenContainer.removeAttribute("data-loaded");
     };
@@ -319,9 +362,11 @@ function renderSidebar() {
       const newName = prompt("Rename stack to:", stackName);
       if (newName?.trim() && newName !== stackName) {
         if (isCustom) {
+          // Custom stack: rename the key in localStorage
           const s = STORAGE.getStacks(); s[newName] = s[stackName]; delete s[stackName]; STORAGE.saveStacks(s);
         } else {
-          const a = STORAGE.getAliases(); a[stackName] = newName; STORAGE.saveAliases(a);
+          // Folder renaming (compose projects) disabled for now to avoid local storage
+          alert("ไม่อนุญาตให้เปลี่ยนชื่อ stack!!! \nหากต้องการจะเปลี่ยนชื่อ stack กรุณาสร้าง stack ใหม่เป็นของตัวเอง");
         }
         renderSidebar();
       }
@@ -338,13 +383,17 @@ function renderSidebar() {
       e.stopPropagation();
       const willOpen = !group.classList.contains("open");
       group.classList.toggle("open");
+      // Persist open/close state so re-renders don't reset it
+      if (willOpen) openStacks.add(stackName);
+      else openStacks.delete(stackName);
       if (willOpen && childrenContainer.getAttribute("data-loaded") === "false") renderItems();
     });
 
     header.addEventListener("click", e => {
       if (e.target.closest(".stack-actions")) return;
-      if (folderDataMap[stackName].length > 0)
-        selectStack(stackName, folderDataMap[stackName].map(d => d.displayName));
+      if (e.target.closest(".folder-icon")) return;   // icon has its own toggle handler
+      if (stackItems.length > 0)
+        selectStack(stackName, stackItems.map(d => d.cname));
     });
 
     folderList.appendChild(group);
@@ -356,21 +405,46 @@ function selectStack(stackName, containerNames) {
   loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
 }
 
-function makeContainerItem(name, dotClass, errorCount) {
+function makeContainerItem(name, realName, dotClass, errorCount) {
   const div = document.createElement("div");
-  const isSelected = state.selectedStack === name;
+  const isSelected = state.selectedStack === realName || state.selectedStack === name;
   div.className = "container-item" + (isSelected ? " active" : "");
   div.innerHTML = `
     ${dotClass ? `<span class="c-dot ${dotClass}"></span>` : `<span class="c-dot" style="background:var(--accent)"></span>`}
     <span class="c-name">${escHtml(name)}</span>
     ${errorCount > 0 ? `<span class="c-badge">${fmt(errorCount)}</span>` : ""}
-    ${name ? `<span class="c-star" title="Add to Stack">➕</span>` : ""}
+    <div class="c-actions" style="margin-left:auto;display:flex;gap:4px;">
+      ${realName ? `<span class="c-edit" title="Rename Container" style="cursor:pointer;font-size:10px;">✏️</span>` : ""}
+      ${realName ? `<span class="c-star" title="Add to Stack" style="cursor:pointer;">➕</span>` : ""}
+    </div>
   `;
   div.addEventListener("click", () => {
-    selectStack(name, [name]);
+    selectStack(name, [realName]);
   });
   div.querySelector(".c-star")?.addEventListener("click", e => {
-    e.stopPropagation(); openAddToStackModal(name);
+    e.stopPropagation(); openAddToStackModal(realName);
+  });
+  div.querySelector(".c-edit")?.addEventListener("click", async e => {
+    e.stopPropagation();
+    const newName = prompt(`Rename container "${realName}" to:`, name);
+    if (newName !== null && newName !== name) {
+      try {
+        const res = await fetch(`${API_BASE}/user/containers/rename`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ container_name: realName, custom_name: newName.trim() })
+        });
+        if (res.ok) {
+          await loadContainerAliases();
+          renderSidebar();
+        } else {
+          alert("Failed to rename container.");
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
   });
   return div;
 }
@@ -450,9 +524,10 @@ function renderTable(rows) {
     const lvl = (level || "").toLowerCase();
     const rowCls = lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "";
     const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
+    const displayName = containerAliases[cname] || cname;
     return `<tr class="${rowCls}">
       <td class="td-ts">${formatTs(ts)}</td>
-      <td class="td-cid" title="${escHtml(cname)}">${escHtml(cname)}</td>
+      <td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td>
       <td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
       <td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>
     </tr>`;
@@ -562,8 +637,8 @@ function openExportPanel() {
     }));
   }
 
-  el("export-from").value = el("range-from").value || "";
-  el("export-to").value = el("range-to").value || "";
+  setCustomDateTime("export-from", getCustomDateTime("range-from"));
+  setCustomDateTime("export-to", getCustomDateTime("range-to"));
   el("export-all-time").checked = false;
   el("export-status").classList.add("hidden");
 
@@ -651,10 +726,14 @@ el("btn-export-confirm").addEventListener("click", async () => {
   const params = new URLSearchParams();
   if (exportSelectedContainers.length > 0)
     params.set("container_names", exportSelectedContainers.map(c => c.name).join(","));
-  if (!allTime && el("export-from").value)
-    params.set("from_ts", el("export-from").value.replace("T", " ") + ":00");
-  if (!allTime && el("export-to").value)
-    params.set("to_ts", el("export-to").value.replace("T", " ") + ":00");
+
+  const fromTs = getCustomDateTime("export-from");
+  const toTs = getCustomDateTime("export-to");
+
+  if (!allTime && fromTs)
+    params.set("from_ts", fromTs.replace("T", " ") + ":00");
+  if (!allTime && toTs)
+    params.set("to_ts", toTs.replace("T", " ") + ":00");
 
   btn.disabled = true;
   btn.textContent = "Preparing…";
@@ -662,26 +741,16 @@ el("btn-export-confirm").addEventListener("click", async () => {
   status.className = "export-status";
   status.classList.remove("hidden");
 
-  try {
-    const res = await fetch(`${API_BASE}/export?${params}`, { credentials: "include" });
-    if (!res.ok) throw new Error(`Server error ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `logs_export_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.jsv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    status.textContent = "✅ Export downloaded!";
-    status.classList.add("success");
-    setTimeout(() => el("export-overlay").classList.add("hidden"), 1500);
-  } catch (e) {
-    status.textContent = "❌ Export failed: " + e.message;
-    status.classList.add("error");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "⬇ Download JSV";
-  }
+  // Using direct location change for standard browser download handling
+  // This is better for large files and works well since we use cookies for auth
+  const downloadUrl = `${API_BASE}/export?${params.toString()}`;
+  window.location.href = downloadUrl;
+
+  status.textContent = "✅ Download started (check your browser downloads)";
+  status.classList.add("success");
+  setTimeout(() => el("export-overlay").classList.add("hidden"), 3000);
+  btn.disabled = false;
+  btn.textContent = "⬇ Download JSV";
 });
 
 el("btn-export-cancel").addEventListener("click", () => el("export-overlay").classList.add("hidden"));
@@ -1118,78 +1187,111 @@ el("btn-new-stack").addEventListener("click", () => {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
-  // Filter bar
-  el("btn-apply").addEventListener("click", () => {
-    state.search = el("search-input").value.trim();
-    state.level = el("level-select").value;
-    state.sortDir = el("sort-select").value;
-    state.fromDate = el("range-from").value || null;
-    state.toDate = el("range-to").value || null;
-    state.page = 0; loadLogs();
-  });
-  el("btn-reset").addEventListener("click", () => {
-    state.search = state.level = ""; state.fromDate = state.toDate = null;
-    state.sortDir = "DESC"; state.page = 0;
-    ["search-input", "level-select", "sort-select", "range-from", "range-to"]
-      .forEach(id => el(id).value = "");
-    el("sort-select").value = "DESC";
-    loadLogs();
-  });
-  el("search-input").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-apply").click(); });
+  try {
+    console.log("[INIT] Starting dashboard initialization...");
+    // Populate hour and minute select options
+    const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
+    const mins = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
 
-  // Pagination
-  el("btn-prev").addEventListener("click", () => { state.page--; loadLogs(); });
-  el("btn-next").addEventListener("click", () => { state.page++; loadLogs(); });
+    ["range-from-hour", "range-to-hour", "export-from-hour", "export-to-hour"].forEach(id => {
+      const target = el(id);
+      if (target) target.innerHTML = hours.map(v => `<option value="${v}">${v}</option>`).join("");
+    });
+    ["range-from-minute", "range-to-minute", "export-from-minute", "export-to-minute"].forEach(id => {
+      const target = el(id);
+      if (target) target.innerHTML = mins.map(v => `<option value="${v}">${v}</option>`).join("");
+    });
 
-  // Refresh
-  el("btn-refresh").addEventListener("click", refresh);
+    // Filter bar
+    const applyBtn = el("btn-apply");
+    if (applyBtn) {
+      applyBtn.addEventListener("click", () => {
+        state.search = (el("search-input")?.value || "").trim();
+        state.level = el("level-select")?.value || "";
+        state.sortDir = el("sort-select")?.value || "DESC";
+        state.fromDate = getCustomDateTime("range-from");
+        state.toDate = getCustomDateTime("range-to");
+        state.page = 0; loadLogs();
+      });
+    }
+    el("btn-reset").addEventListener("click", () => {
+      state.search = state.level = ""; state.fromDate = state.toDate = null;
+      state.sortDir = "DESC"; state.page = 0;
+      ["search-input", "level-select", "sort-select"].forEach(id => el(id).value = "");
+      setCustomDateTime("range-from", null);
+      setCustomDateTime("range-to", null);
+      el("sort-select").value = "DESC";
+      loadLogs();
+    });
+    el("search-input").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-apply").click(); });
 
-  // Clear DB (admin only)
-  el("btn-clear-db").addEventListener("click", openClearModal);
-  el("btn-modal-cancel").addEventListener("click", closeClearModal);
-  el("btn-modal-confirm").addEventListener("click", executeClear);
-  document.querySelectorAll('input[name="clear-range"]').forEach(r => r.addEventListener("change", updateModalPreview));
-  el("modal-overlay").addEventListener("click", e => { if (e.target === el("modal-overlay")) closeClearModal(); });
+    // Pagination
+    el("btn-prev").addEventListener("click", () => { state.page--; loadLogs(); });
+    el("btn-next").addEventListener("click", () => { state.page++; loadLogs(); });
 
-  // Export
-  el("btn-export").addEventListener("click", openExportPanel);
+    // Refresh
+    el("btn-refresh").addEventListener("click", refresh);
 
-  // Info icon tooltip
-  const infoIcon = document.querySelector(".sidebar-legend .info-icon");
-  if (infoIcon) {
-    const legend = infoIcon.closest(".sidebar-legend");
-    if (legend?.hasAttribute("title")) { legend.setAttribute("aria-label", legend.getAttribute("title")); legend.removeAttribute("title"); }
-    infoIcon.removeAttribute("title");
-    const infoHtml = `
+    // Clear DB (admin only)
+    el("btn-clear-db").addEventListener("click", openClearModal);
+    el("btn-modal-cancel").addEventListener("click", closeClearModal);
+    el("btn-modal-confirm").addEventListener("click", executeClear);
+    document.querySelectorAll('input[name="clear-range"]').forEach(r => r.addEventListener("change", updateModalPreview));
+    el("modal-overlay").addEventListener("click", e => { if (e.target === el("modal-overlay")) closeClearModal(); });
+
+    // Export
+    el("btn-export").addEventListener("click", openExportPanel);
+
+    // Info icon tooltip
+    const infoIcon = document.querySelector(".sidebar-legend .info-icon");
+    if (infoIcon) {
+      const legend = infoIcon.closest(".sidebar-legend");
+      if (legend?.hasAttribute("title")) { legend.setAttribute("aria-label", legend.getAttribute("title")); legend.removeAttribute("title"); }
+      infoIcon.removeAttribute("title");
+      const infoHtml = `
       <div style="margin-bottom:6px;font-weight:600;">Dot Color Legend:</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
         <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot green" style="width:10px;height:10px;"></span><span>&lt; 1m (Active)</span></span>
         <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot amber" style="width:10px;height:10px;"></span><span>&lt; 5m (Recent)</span></span>
         <span style="display:inline-flex;align-items:center;gap:6px;"><span class="legend-dot red" style="width:10px;height:10px;"></span><span>&gt; 5m (Inactive)</span></span>
       </div>`;
-    infoIcon.addEventListener("mouseenter", e => showStackTooltip(infoIcon, infoHtml, e, true));
-    infoIcon.addEventListener("mousemove", e => showStackTooltip(infoIcon, infoHtml, e, true));
-    infoIcon.addEventListener("mouseleave", () => hideStackTooltip());
-  }
+      infoIcon.addEventListener("mouseenter", e => showStackTooltip(infoIcon, infoHtml, e, true));
+      infoIcon.addEventListener("mousemove", e => showStackTooltip(infoIcon, infoHtml, e, true));
+      infoIcon.addEventListener("mouseleave", () => hideStackTooltip());
+    }
 
-  // Check auth, then load data
-  checkAuth().then(ok => {
-    if (!ok) return;
-    loadSettings();
-    loadNotifications();
-    initSSE();
-    refresh();
-    // Auto-refresh every 30s
-    setInterval(refresh, 30_000);
-    // Reload notifications every 60s
-    setInterval(loadNotifications, 60_000);
-  });
+    // Check auth, then load data
+    checkAuth().then(ok => {
+      if (!ok) return;
+      loadSettings();
+      loadNotifications();
+      loadContainerAliases();
+      initSSE();
+      refresh();
+      setInterval(refresh, 30_000);
+      setInterval(loadNotifications, 60_000);
+    }).catch(e => console.error("[INIT] Auth/Load chain failed", e));
+  } catch (err) {
+    console.error("[INIT] Critical initialization error", err);
+  }
 }
 
 async function refresh() {
-  el("btn-refresh").textContent = "↻ …";
-  await Promise.all([loadMetrics(), loadContainerList(), loadLogs()]);
-  el("btn-refresh").textContent = "↻ Refresh";
+  try {
+    const btn = el("btn-refresh");
+    if (btn) btn.textContent = "↻ …";
+    await Promise.all([
+      loadContainerAliases(),
+      loadMetrics(),
+      loadContainerList(),
+      loadLogs()
+    ]);
+    if (btn) btn.textContent = "↻ Refresh";
+  } catch (e) {
+    console.error("[REFRESH] failed", e);
+    const btn = el("btn-refresh");
+    if (btn) btn.textContent = "↻ Error";
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

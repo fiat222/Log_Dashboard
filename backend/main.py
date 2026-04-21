@@ -124,6 +124,7 @@ INIT_STMTS = [
     CREATE TABLE IF NOT EXISTS container_ownership (
         container_id VARCHAR(255),
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        custom_name VARCHAR(255),
         PRIMARY KEY (container_id, user_id)
     );
     """,
@@ -160,6 +161,7 @@ INIT_STMTS = [
     "CREATE INDEX IF NOT EXISTS idx_container_ownership_user ON container_ownership(user_id)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR",
+    "ALTER TABLE container_ownership ADD COLUMN IF NOT EXISTS custom_name VARCHAR(255)",
 ]
 
 
@@ -712,7 +714,7 @@ async def rate_limit_api(request: Request):
         raise HTTPException(status_code=429, detail="Too many API requests.")
 
 
-app = FastAPI(title="Log Dashboard API", root_path=APP_BASE, lifespan=lifespan)
+app = FastAPI(title="Log Dashboard API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -984,15 +986,14 @@ async def ch_exec(request: Request, user=Depends(require_role("super_admin"))):
 # ── Routes: Export ────────────────────────────────────────────────────────────
 @app.get("/api/export")
 async def export_logs(
-    container_ids: str = Query(default=""),
+    container_names: str = Query(default=""),
     from_ts: Optional[str] = Query(default=None),
     to_ts:   Optional[str] = Query(default=None),
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Stream logs as JSV (newline-delimited JSON). Applies role-based filtering."""
-    # Build container id list
-    cids = [c.strip() for c in container_ids.split(",") if c.strip()] if container_ids else []
+    # Build list of container names to filter
+    cnames = [c.strip() for c in container_names.split(",") if c.strip()] if container_names else []
 
     # Developer: restrict to owned containers
     if user.get("role") == "developer":
@@ -1000,14 +1001,14 @@ async def export_logs(
             "SELECT container_id FROM container_ownership WHERE user_id = :uid"
         ), {"uid": user.get("user_id")})
         owned = {row[0] for row in result.fetchall()}
-        cids = [c for c in cids if c in owned] if cids else list(owned)
-        if not cids:
+        cnames = [c for c in cnames if c in owned] if cnames else list(owned)
+        if not cnames:
             return StreamingResponse(iter([]), media_type="application/x-ndjson")
 
     parts = []
-    if cids:
-        safe = ",".join(f"'{c}'" for c in cids)
-        parts.append(f"container_id IN ({safe})")
+    if cnames:
+        safe = ",".join(f"'{c}'" for c in cnames)
+        parts.append(f"container_name IN ({safe})")
     if from_ts:
         parts.append(f"timestamp >= '{from_ts}'")
     if to_ts:
@@ -1037,7 +1038,10 @@ async def export_logs(
     return StreamingResponse(
         stream_rows(),
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Accel-Buffering": "no"
+        },
     )
 
 
@@ -1163,17 +1167,57 @@ async def update_user_role(
     return {"ok": True}
 
 
+# ── Routes: Container Ownership & Aliases ─────────────────────────────────────
+@app.get("/api/user/containers")
+async def get_user_containers(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Get the current user's containers and their custom names."""
+    result = await db.execute(text(
+        "SELECT container_id, custom_name "
+        "FROM container_ownership WHERE user_id = :uid"
+    ), {"uid": user.get("user_id")})
+    rows = result.fetchall()
+    return [{"container_name": r[0], "custom_name": r[1]} for r in rows]
+
+
+class RenameContainerRequest(BaseModel):
+    container_name: str
+    custom_name: str
+
+
+@app.post("/api/user/containers/rename")
+async def rename_container(
+    req: RenameContainerRequest, 
+    user=Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Rename a container for the current user."""
+    # First check if they own it or are an admin
+    if user.get("role") == "developer":
+        res = await db.execute(text(
+            "SELECT container_id FROM container_ownership WHERE user_id = :uid AND container_id = :cname"
+        ), {"uid": user.get("user_id"), "cname": req.container_name})
+        if not res.fetchone():
+            raise HTTPException(status_code=403, detail="You do not own this container.")
+        
+    await db.execute(text(
+        "INSERT INTO container_ownership (container_id, user_id, custom_name) VALUES (:cname, :uid, :custom) "
+        "ON CONFLICT (container_id, user_id) DO UPDATE SET custom_name = EXCLUDED.custom_name"
+    ), {"custom": req.custom_name, "uid": user.get("user_id"), "cname": req.container_name})
+    await db.commit()
+    return {"ok": True}
+
+
 # ── Routes: Container Ownership ───────────────────────────────────────────────
 @app.get("/api/admin/containers/ownership")
 async def get_ownership(user=Depends(require_role("super_admin", "admin")),
                          db: AsyncSession = Depends(get_db)):
     result = await db.execute(text(
-        "SELECT co.container_id, u.id, u.username, u.role "
+        "SELECT co.container_id, u.id, u.username, u.role, co.custom_name "
         "FROM container_ownership co JOIN users u ON co.user_id = u.id "
         "ORDER BY co.container_id"
     ))
     rows = result.fetchall()
-    return [{"container_id": r[0], "container_name": r[0], "user_id": r[1], "username": r[2], "role": r[3]} for r in rows]
+    return [{"container_id": r[0], "container_name": r[0], "user_id": r[1], "username": r[2], "role": r[3], "custom_name": r[4]} for r in rows]
 
 
 @app.post("/api/admin/containers/assign")

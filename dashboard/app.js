@@ -194,6 +194,13 @@ function buildWhere(includeStack = true) {
   if (state.search) parts.push(`message ILIKE '%${escLike(state.search)}%'`);
   if (state.fromDate) parts.push(`timestamp >= '${state.fromDate}:00'`);
   if (state.toDate) parts.push(`timestamp <= '${state.toDate}:00'`);
+  
+  // DEFAULT: If no dates are selected, always restrict to last 24h 
+  // to avoid scanning the entire database history (Heavy full-table scan).
+  if (!state.fromDate && !state.toDate) {
+    parts.push(`timestamp > now() - INTERVAL 24 HOUR`);
+  }
+
   return parts.length ? "WHERE " + parts.join(" AND ") : "";
 }
 
@@ -205,6 +212,7 @@ async function loadMetrics() {
              countIf(level='warn' OR level='warning'),
              uniqExact(container_id)
       FROM container_logs
+      WHERE timestamp > now() - INTERVAL 24 HOUR
     `);
     if (rows.length) {
       const [total, errors, warnings, containers] = rows[0];
@@ -274,6 +282,7 @@ function renderSidebar() {
   folderList.innerHTML = "";
   folderDataMap = {};
   const customStacks = STORAGE.getStacks();
+  const isAdmin = state.user?.role === "super_admin" || state.user?.role === "admin";
 
   const allItem = document.createElement("div");
   allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
@@ -334,6 +343,7 @@ function renderSidebar() {
         <span>${escHtml(stackName)}</span>
         <div class="stack-actions" style="margin-left:auto;display:flex;gap:4px;">
           <button class="btn-ghost btn-icon action-rename" title="Rename" style="font-size:10px;padding:2px 4px;">✏️</button>
+          ${isAdmin ? `<button class="btn-ghost btn-icon action-purge-stack" title="Permanently Delete Logs" style="font-size:10px;padding:2px 4px;">🗑️</button>` : ""}
           ${isCustom ? `<button class="btn-ghost btn-icon action-delete" title="Delete" style="font-size:10px;padding:2px 4px;">🗑️</button>` : ""}
         </div>
       </div>
@@ -379,6 +389,30 @@ function renderSidebar() {
       }
     });
 
+    const purgeStackBtn = group.querySelector(".action-purge-stack");
+    if (purgeStackBtn) purgeStackBtn.addEventListener("click", async e => {
+      e.stopPropagation();
+      if (confirm(`PERMANENT DELETE: Are you sure you want to delete ALL logs for stack "${stackName}"? This is a heavy operation and cannot be undone.`)) {
+        try {
+          purgeStackBtn.disabled = true;
+          const res = await fetch(`${API_BASE}/admin/purge`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ type: "stack", name: rawProject || stackName })
+          });
+          if (res.ok) {
+            alert("Purge mutation started. Data will disappear shortly.");
+            refresh();
+          } else {
+            const err = await res.json();
+            alert("Purge failed: " + (err.detail || "Unknown error"));
+          }
+        } catch (err) { console.error(err); }
+        finally { purgeStackBtn.disabled = false; }
+      }
+    });
+
     group.querySelector(".folder-icon").addEventListener("click", e => {
       e.stopPropagation();
       const willOpen = !group.classList.contains("open");
@@ -408,12 +442,14 @@ function selectStack(stackName, containerNames) {
 function makeContainerItem(name, realName, dotClass, errorCount) {
   const div = document.createElement("div");
   const isSelected = state.selectedStack === realName || state.selectedStack === name;
+  const isAdmin = state.user?.role === "super_admin" || state.user?.role === "admin";
   div.className = "container-item" + (isSelected ? " active" : "");
   div.innerHTML = `
     ${dotClass ? `<span class="c-dot ${dotClass}"></span>` : `<span class="c-dot" style="background:var(--accent)"></span>`}
     <span class="c-name">${escHtml(name)}</span>
     ${errorCount > 0 ? `<span class="c-badge">${fmt(errorCount)}</span>` : ""}
     <div class="c-actions" style="margin-left:auto;display:flex;gap:4px;">
+      ${isAdmin ? `<span class="c-purge" title="Permanently Delete Logs" style="cursor:pointer;font-size:10px;">🗑️</span>` : ""}
       ${realName ? `<span class="c-edit" title="Rename Container" style="cursor:pointer;font-size:10px;">✏️</span>` : ""}
       ${realName ? `<span class="c-star" title="Add to Stack" style="cursor:pointer;">➕</span>` : ""}
     </div>
@@ -423,6 +459,26 @@ function makeContainerItem(name, realName, dotClass, errorCount) {
   });
   div.querySelector(".c-star")?.addEventListener("click", e => {
     e.stopPropagation(); openAddToStackModal(realName);
+  });
+  div.querySelector(".c-purge")?.addEventListener("click", async e => {
+    e.stopPropagation();
+    if (confirm(`PERMANENT DELETE: Delete all logs for container "${realName || name}"? Data will be wiped from database.`)) {
+      try {
+        const res = await fetch(`${API_BASE}/admin/purge`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ type: "container", name: realName || name })
+        });
+        if (res.ok) {
+          alert("Purge mutation started.");
+          refresh();
+        } else {
+          const err = await res.json();
+          alert("Purge failed: " + (err.detail || "Unknown error"));
+        }
+      } catch (err) { console.error(err); }
+    }
   });
   div.querySelector(".c-edit")?.addEventListener("click", async e => {
     e.stopPropagation();

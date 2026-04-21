@@ -12,6 +12,7 @@ Handles:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -629,6 +630,37 @@ async def check_and_assign_containers():
     except Exception as e:
         log.warning("check_and_assign_containers error: %s", e)
 
+# ── Global State for Circuit Breaker & Caching ────────────────────────────────
+class CircuitBreaker:
+    def __init__(self, failure_threshold=3, recover_time=30):
+        self.failures = 0
+        self.threshold = failure_threshold
+        self.recover_time = recover_time
+        self.last_failure_time = 0
+        self.state = "CLOSED"  # CLOSED, OPEN
+
+    def is_available(self):
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recover_time:
+                self.state = "CLOSED"
+                self.failures = 0
+                return True
+            return False
+        return True
+
+    def record_failure(self):
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.threshold:
+            self.state = "OPEN"
+            log.warning("Circuit Breaker OPEN after %d failures. ClickHouse is struggling.", self.failures)
+
+    def record_success(self):
+        self.failures = 0
+        self.state = "CLOSED"
+
+ch_circuit = CircuitBreaker()
+
 # ── App Lifecycle & Rate Limiting ─────────────────────────────────────────────
 scheduler = AsyncIOScheduler()
 redis_client: redis_async.Redis = None
@@ -712,6 +744,19 @@ async def rate_limit_api(request: Request):
 
     if current > 100:
         raise HTTPException(status_code=429, detail="Too many API requests.")
+
+
+async def rate_limit_purge(request: Request):
+    """Specific rate limit for purge endpoint: 1 request per 10 seconds per Admin."""
+    if not redis_client: return
+    forwarded = request.headers.get("X-Forwarded-For")
+    ip = forwarded.split(",")[0] if forwarded else request.client.host
+    key = f"rl:purge:{ip}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, 10)
+    if current > 1:
+        raise HTTPException(status_code=429, detail="Please wait before performing another purge.")
 
 
 app = FastAPI(title="Log Dashboard API", lifespan=lifespan)
@@ -907,15 +952,23 @@ async def sso_callback(code: str = Query(...), response: Response = None, db: As
 @app.get("/api/query", dependencies=[Depends(rate_limit_api)])
 async def ch_query(q: str = Query(...), user=Depends(get_current_user),
                    db: AsyncSession = Depends(get_db)):
-    """Proxy SELECT queries to ClickHouse with role-based container filtering."""
-    # Basic sanity: only allow SELECT
+    """Proxy SELECT queries to ClickHouse with role-based container filtering and caching."""
+    # 0. Circuit Breaker Check
+    if not ch_circuit.is_available():
+        # Check if we have any cached data to serve as fallback
+        log.warning("Circuit Breaker is OPEN. Skipping ClickHouse query.")
+        raise HTTPException(503, "Database temporarily unavailable (Circuit Breaker active)")
+
+    # 1. Basic sanity: only allow SELECT
     stripped = q.strip().upper()
     if not stripped.startswith("SELECT"):
         raise HTTPException(400, "Only SELECT queries allowed on this endpoint")
 
-    # Developer role: inject container filter
+    # 2. Developer role: inject container filter
     modified_q = q
+    is_global = True  # Used for cache keying
     if user.get("role") == "developer":
+        is_global = False
         result = await db.execute(text(
             "SELECT container_id FROM container_ownership WHERE user_id = :uid"
         ), {"uid": user.get("user_id")})
@@ -926,7 +979,6 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
         cname_list = ",".join(f"'{c}'" for c in owned)
         filter_clause = f" container_name IN ({cname_list})"
 
-        # Find where to insert the filter (before GROUP BY, ORDER BY, LIMIT, or FORMAT)
         upper_q = q.upper()
         keywords = [" GROUP BY ", " ORDER BY ", " LIMIT ", " FORMAT "]
         insert_pos = len(q)
@@ -945,19 +997,45 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
         
         log.info("Modified Query for Developer: %s", modified_q)
 
+    # 3. Cache Check
+    q_hash = hashlib.md5(modified_q.encode()).hexdigest()
+    cache_key = f"cache:query:global:{q_hash}" if is_global else f"cache:query:user:{user.get('user_id')}:{q_hash}"
+    ttl = 60 if is_global else 30
+
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            log.info("Cache HIT for %s", cache_key)
+            return JSONResponse(content=json.loads(cached))
+
+    # 4. Perform Query
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url,
-                               params={"query": modified_q, "database": CH_DB,
-                                       "default_format": "JSONCompact"},
-                               headers={"X-ClickHouse-User": CH_USER,
-                                        "X-ClickHouse-Key": CH_PASS},
-                               timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            body = await resp.text()
-            if resp.status != 200:
-                log.error("ClickHouse Error (%d): %s", resp.status, body)
-                raise HTTPException(resp.status, f"ClickHouse error: {body[:300]}")
-            return JSONResponse(content=json.loads(body))
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url,
+                                   params={"query": modified_q, "database": CH_DB,
+                                           "default_format": "JSONCompact"},
+                                   headers={"X-ClickHouse-User": CH_USER,
+                                            "X-ClickHouse-Key": CH_PASS},
+                                   timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    ch_circuit.record_failure()
+                    log.error("ClickHouse Error (%d): %s", resp.status, body)
+                    raise HTTPException(resp.status, f"ClickHouse error: {body[:300]}")
+                
+                ch_circuit.record_success()
+                data = json.loads(body)
+                
+                # 5. Cache result
+                if redis_client:
+                    await redis_client.setex(cache_key, ttl, body)
+                    
+                return JSONResponse(content=data)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        ch_circuit.record_failure()
+        log.error("ClickHouse connection/timeout error: %s", e)
+        raise HTTPException(503, f"Failed to connect to database: {str(e)}")
 
 
 @app.post("/api/exec")
@@ -1246,6 +1324,48 @@ async def remove_container_assignment(
     ), {"cname": container_name, "uid": user_id})
     await db.commit()
     return {"ok": True}
+
+
+class PurgeRequest(BaseModel):
+    type: str  # "container" | "stack"
+    name: str
+
+@app.post("/api/admin/purge", dependencies=[Depends(require_role("super_admin", "admin")), Depends(rate_limit_purge)])
+async def purge_data(req: PurgeRequest):
+    """Permanently delete logs for a container or stack (Heavyweight Mutation)."""
+    if req.type == "container":
+        where = f"container_name = '{req.name.replace("'", "''")}'"
+    elif req.type == "stack":
+        # Supports both com.docker.compose.project and com_docker_compose_project
+        where = (
+            f"JSONExtractString(labels, 'com.docker.compose.project') = '{req.name.replace("'", "''")}' "
+            f"OR JSONExtractString(labels, 'com_docker_compose_project') = '{req.name.replace("'", "''")}'"
+        )
+    else:
+        raise HTTPException(400, "Invalid purge type")
+
+    sql = f"ALTER TABLE logs.container_logs DELETE WHERE {where} SETTINGS mutations_sync = 0"
+    
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=sql,
+                                params={"database": CH_DB},
+                                headers={"X-ClickHouse-User": CH_USER,
+                                         "X-ClickHouse-Key": CH_PASS,
+                                         "Content-Type": "text/plain; charset=utf-8"},
+                                timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            body = await resp.text()
+            if resp.status != 200:
+                log.error("Purge Error (%d): %s", resp.status, body)
+                raise HTTPException(resp.status, f"ClickHouse error: {body[:300]}")
+            
+            # Clear cache for this container/stack to reflect changes
+            if redis_client:
+                # We don't know the exact keys, so we rely on cache expiration or we could do a pattern delete
+                # but pattern delete in Redis is slow. Clear common prefixes if needed.
+                pass
+
+            return {"ok": True, "message": "Purge mutation started asynchronously."}
 
 
 # ── Routes: Settings ──────────────────────────────────────────────────────────

@@ -19,27 +19,51 @@ fi
 
 # 2. ClickHouse Backup
 echo "-> Backing up ClickHouse logs..."
-CH_QUERY="BACKUP DATABASE $CLICKHOUSE_DB TO File('ch_logs_$DATE/');"
+CH_BACKUP_NAME="ch_logs_$DATE"
+CH_QUERY="BACKUP DATABASE $CLICKHOUSE_DB TO File('$CH_BACKUP_NAME/');"
 
-# Call ClickHouse API to trigger native backup
-# Notes: With /mnt/Logstore_backup mounted to /var/lib/clickhouse/user_files/backups
-# This writes directly to /mnt/Logstore_backup/ch_logs_$DATE
-CH_RESP=$(curl -s -X POST -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" "http://clickhouse:8123/" -d "$CH_QUERY")
+CH_RESP=$(curl -s -X POST -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
+  "http://clickhouse:8123/" -d "$CH_QUERY")
 
 if echo "$CH_RESP" | grep -qi "Exception\|Error\|failed"; then
     echo "  [FAIL] ClickHouse backup error: $CH_RESP"
 else
-    echo "  [OK] ClickHouse native backup complete."
-    
-    # We compress it to save space and keep it as a single file.
-    # The 'backup' container mounts /mnt/Logstore_backup to /backups
-    sleep 2 # Ensure ClickHouse has fully written the files
-    CH_RAW_DIR="$BACKUP_DIR/ch_logs_$DATE"
-    CH_TGZ="$BACKUP_DIR/ch_logs_$DATE.tar.gz"
-    
+    # Poll until backup finishes
+    echo "  [INFO] Waiting for ClickHouse to finish writing..."
+    MAX_WAIT=120
+    ELAPSED=0
+
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        STATUS=$(curl -s -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
+          "http://clickhouse:8123/" \
+          --data "SELECT status FROM system.backups ORDER BY start_time DESC LIMIT 1 FORMAT TabSeparated")
+
+        echo "  [INFO] Status: $STATUS (${ELAPSED}s elapsed)"
+
+        if [ "$STATUS" = "BACKUP_CREATED" ]; then
+            echo "  [OK] ClickHouse finished writing backup"
+            break
+        elif echo "$STATUS" | grep -qi "FAILED\|ERROR"; then
+            echo "  [FAIL] ClickHouse backup failed: $STATUS"
+            exit 1
+        fi
+
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
+    done
+
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        echo "  [FAIL] Timed out after ${MAX_WAIT}s"
+        exit 1
+    fi
+
+    # Compress
+    CH_RAW_DIR="/backups/$CH_BACKUP_NAME"
+    CH_TGZ="$BACKUP_DIR/$CH_BACKUP_NAME.tar.gz"
+
     if [ -d "$CH_RAW_DIR" ]; then
-        tar -czf "$CH_TGZ" -C "$BACKUP_DIR" "ch_logs_$DATE"
-        rm -rf "$CH_RAW_DIR" # Remove uncompressed raw folder
+        tar -czf "$CH_TGZ" -C "$BACKUP_DIR" "$CH_BACKUP_NAME"
+        rm -rf "$CH_RAW_DIR"
         echo "  [OK] Compressed ClickHouse backup to: $CH_TGZ"
     else
         echo "  [FAIL] Cannot find ClickHouse raw backup directory at $CH_RAW_DIR"

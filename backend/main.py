@@ -1395,6 +1395,25 @@ async def notifications_stream(request: Request, user=Depends(get_current_user))
                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.post("/api/admin/backup/trigger")
+async def trigger_backup(user=Depends(require_role("super_admin", "admin"))):
+    """Admin-only: Trigger a manual backup by calling the backup service API."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post("http://backup:8080/trigger", timeout=10.0)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                log.error("Backup service responded with status: %d body: %s", resp.status_code, resp.text)
+                raise HTTPException(status_code=502, detail=f"Backup service error: {resp.text}")
+    except httpx.ConnectError:
+        log.error("Failed to connect to backup service at http://backup:8080")
+        raise HTTPException(status_code=503, detail="Backup service is not available")
+    except Exception as e:
+        log.exception("trigger_backup error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/api/health", dependencies=[Depends(rate_limit_api)])
 async def health():

@@ -171,6 +171,23 @@
               <div class="admin-empty">Loading ownership...</div>
             </div>
           </div>
+
+          <!-- System Maintenance -->
+          <div class="admin-card">
+            <h3>🛠 System Maintenance</h3>
+            <p class="admin-hint">Manual tasks and maintenance</p>
+            <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span>Full System Backup</span>
+                <button id="btn-trigger-backup" class="btn-primary" style="font-size: 12px; padding: 6px 14px;">
+                  🚀 Start Backup
+                </button>
+              </div>
+              <p style="font-size: 11px; color: var(--text-dim);">
+                * This will trigger PostgreSQL and ClickHouse backups immediately.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 

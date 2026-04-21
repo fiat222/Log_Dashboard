@@ -1115,6 +1115,25 @@ document.querySelectorAll(".btn-save-setting").forEach(btn => {
   });
 });
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+document.querySelectorAll(".btn-save-setting").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const key = btn.dataset.key;
+    const inputId = btn.dataset.src;
+    const val = el(inputId).value;
+    try {
+      btn.textContent = "⌛";
+      await fetch(`${API_BASE}/settings?key=${key}&value=${encodeURIComponent(val)}`, {
+        method: "POST", credentials: "include"
+      });
+      btn.textContent = "✅";
+      setTimeout(() => btn.textContent = "Save", 1500);
+      state.settings[key] = val;
+      if (key === "active_color_green") document.documentElement.style.setProperty("--success", val);
+    } catch { btn.textContent = "❌"; }
+  });
+});
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 el("tab-logs").addEventListener("click", () => {
   state.view = "logs";
@@ -1225,6 +1244,76 @@ function init() {
     });
     el("search-input").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-apply").click(); });
 
+    // Admin Panel listeners (User search, etc.)
+    const userSearch = el("user-search");
+    if (userSearch) {
+      userSearch.addEventListener("input", (e) => {
+        loadUserList(e.target.value.trim());
+      });
+    }
+
+    // Container Assignment search
+    const assignSearch = el("container-assign-search");
+    if (assignSearch) {
+      assignSearch.addEventListener("input", () => {
+        const q = assignSearch.value.toLowerCase().trim();
+        const results = el("assign-container-results");
+        if (!q) { results.classList.add("hidden"); return; }
+
+        const matches = [];
+        lastSidebarRows.forEach(([cname]) => {
+          if (cname.toLowerCase().includes(q))
+            matches.push({ id: cname, label: cname });
+        });
+
+        if (!matches.length) { results.innerHTML = `<div class="export-no-result">No containers found</div>`; results.classList.remove("hidden"); return; }
+
+        results.innerHTML = "";
+        matches.slice(0, 10).forEach(m => {
+          const item = document.createElement("div");
+          item.className = "export-result-item";
+          item.textContent = m.label;
+          item.addEventListener("click", () => {
+            if (!assignSelectedContainers.find(c => c.id === m.id)) {
+              assignSelectedContainers.push(m);
+              renderAssignTags();
+              el("btn-assign-container").disabled = false;
+            }
+            assignSearch.value = "";
+            results.classList.add("hidden");
+          });
+          results.appendChild(item);
+        });
+        results.classList.remove("hidden");
+      });
+    }
+
+    el("btn-assign-container").addEventListener("click", async () => {
+      const uid = el("assign-user-select").value;
+      if (!uid || !assignSelectedContainers.length) return;
+      const btn = el("btn-assign-container");
+      btn.disabled = true; btn.textContent = "Assigning…";
+      try {
+        for (const c of assignSelectedContainers) {
+          await fetch(`${API_BASE}/admin/containers/assign?container_name=${encodeURIComponent(c.id)}&user_id=${uid}`, {
+            method: "POST", credentials: "include"
+          });
+        }
+        assignSelectedContainers = [];
+        renderAssignTags();
+        loadOwnershipList();
+        btn.textContent = "✓ Assigned";
+      } catch { btn.textContent = "❌ Error"; }
+      finally {
+        setTimeout(() => { btn.disabled = false; btn.textContent = "Assign"; }, 2000);
+      }
+    });
+
+    document.addEventListener("click", e => {
+      if (!e.target.closest("#container-assign-search") && !e.target.closest("#assign-container-results"))
+        el("assign-container-results").classList.add("hidden");
+    });
+
     // Pagination
     el("btn-prev").addEventListener("click", () => { state.page--; loadLogs(); });
     el("btn-next").addEventListener("click", () => { state.page++; loadLogs(); });
@@ -1238,6 +1327,35 @@ function init() {
     el("btn-modal-confirm").addEventListener("click", executeClear);
     document.querySelectorAll('input[name="clear-range"]').forEach(r => r.addEventListener("change", updateModalPreview));
     el("modal-overlay").addEventListener("click", e => { if (e.target === el("modal-overlay")) closeClearModal(); });
+
+    // Backup button
+    const backupBtn = el("btn-trigger-backup");
+    if (backupBtn) {
+      backupBtn.addEventListener("click", async () => {
+        if (!confirm("คุณต้องการเริ่มกระบวนการ Backup ทันทีหรือไม่?\n(PostgreSQL + ClickHouse)")) return;
+        
+        backupBtn.disabled = true;
+        backupBtn.textContent = "⏳ Processing...";
+        
+        try {
+          const res = await fetch(`${API_BASE}/admin/backup/trigger`, {
+            method: "POST",
+            credentials: "include"
+          });
+          if (res.ok) {
+            alert("🚀 Backup started!\nระบบกำลังทำงานในพื้นหลัง (Background)\nไฟล์จะถูกเก็บไว้ใน volume: backup_data");
+          } else {
+            const data = await res.json().catch(() => ({}));
+            alert(`❌ Backup failed: ${data.detail || "Unknown error"}`);
+          }
+        } catch (err) {
+          alert(`❌ Error connecting to server: ${err.message}`);
+        } finally {
+          backupBtn.disabled = false;
+          backupBtn.textContent = "🚀 Start Backup";
+        }
+      });
+    }
 
     // Export
     el("btn-export").addEventListener("click", openExportPanel);

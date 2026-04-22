@@ -1072,6 +1072,25 @@ select:focus {
   color: var(--text);
   word-break: break-word;
   line-height: 1.5;
+}
+
+/* Nginx log table */
+.col-ip { width: 130px; }
+.col-method { width: 80px; }
+.col-path { width: auto; min-width: 200px; }
+.col-status { width: 70px; }
+.col-bytes { width: 80px; }
+.col-time { width: 80px; }
+
+#nginx-log-table { width: 100%; border-collapse: collapse; }
+#nginx-log-table th { background: var(--bg-subtle); font-weight: 600; font-size: 12px; color: var(--text-muted); padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+#nginx-log-table td { font-size: 12px; padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); vertical-align: middle; }
+#nginx-log-table tbody tr { transition: background 0.1s; }
+#nginx-log-table tbody tr:hover { background: var(--bg-elevated); }
+#nginx-log-table tbody tr.row-error { background: rgba(244,63,94,0.03); }
+#nginx-log-table tbody tr.row-warn { background: rgba(245,158,11,0.03); }
+.td-ip { font-family: var(--mono); color: var(--text-dim); }
+.td-path { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   overflow-wrap: anywhere;
 }
 

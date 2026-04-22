@@ -790,6 +790,11 @@ def require_role(*roles: str):
         return user
     return dep
 
+# ── Nginx Hepler ───────────────────────────────────────────────────────────
+def require_nginx_access():
+    """Allow only admin and super_admin to access nginx logs."""
+    return require_role("super_admin", "admin")
+
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
@@ -1533,6 +1538,375 @@ async def trigger_backup(user=Depends(require_role("super_admin", "admin"))):
         log.exception("trigger_backup error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+# ── Nginx Tables Helper ───────────────────────────────────────────────────────────
+_nginx_tables_created = False
+
+async def ensure_nginx_tables():
+    """Auto-create nginx tables if not exist."""
+    global _nginx_tables_created
+    if _nginx_tables_created:
+        return
+
+    queries = [
+        """
+        CREATE TABLE IF NOT EXISTS logs.nginx_logs
+        (
+            timestamp       DateTime64(3, 'Asia/Bangkok'),
+            host            LowCardinality(String),
+            remote_addr     String,
+            method          LowCardinality(String),
+            path            String,
+            status          UInt16,
+            bytes_sent      UInt64,
+            request_time    Float32,
+            user_agent      String,
+            referer         String          DEFAULT '-'
+        )
+        ENGINE = MergeTree()
+        PARTITION BY toYYYYMM(timestamp)
+        ORDER BY (timestamp, host, status)
+        TTL toDateTime(timestamp) + INTERVAL 90 DAY
+        SETTINGS merge_with_ttl_timeout = 86400
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS logs.nginx_status_mv_target
+        (
+            minute      DateTime,
+            status      UInt16,
+            count       UInt64
+        )
+        ENGINE = SummingMergeTree()
+        PARTITION BY toYYYYMM(minute)
+        ORDER BY (minute, status)
+        TTL minute + INTERVAL 90 DAY
+        """,
+        """
+        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_status_mv
+        TO logs.nginx_status_mv_target
+        AS
+        SELECT toStartOfMinute(timestamp) AS minute, status, count() AS count
+        FROM logs.nginx_logs GROUP BY minute, status
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS logs.nginx_top_paths_mv_target
+        (
+            hour        DateTime,
+            path       String,
+            total      UInt64,
+            avg_time   Float32,
+            error_count UInt64
+        )
+        ENGINE = SummingMergeTree()
+        PARTITION BY toYYYYMM(hour)
+        ORDER BY (hour, path)
+        TTL hour + INTERVAL 90 DAY
+        """,
+        """
+        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_top_paths_mv
+        TO logs.nginx_top_paths_mv_target
+        AS
+        SELECT toStartOfHour(timestamp) AS hour, path, count() AS total,
+               avg(request_time) AS avg_time, countIf(status >= 400) AS error_count
+        FROM logs.nginx_logs GROUP BY hour, path
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS logs.nginx_hourly_mv_target
+        (
+            hour          DateTime,
+            total        UInt64,
+            errors       UInt64,
+            client_err   UInt64,
+            bytes_total UInt64,
+            avg_time    Float32
+        )
+        ENGINE = SummingMergeTree()
+        PARTITION BY toYYYYMM(hour)
+        ORDER BY hour
+        TTL hour + INTERVAL 90 DAY
+        """,
+        """
+        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_hourly_mv
+        TO logs.nginx_hourly_mv_target
+        AS
+        SELECT toStartOfHour(timestamp) AS hour, count() AS total,
+               countIf(status >= 500) AS errors,
+               countIf(status >= 400 AND status < 500) AS client_err,
+               sum(bytes_sent) AS bytes_total,
+               avg(request_time) AS avg_time
+        FROM logs.nginx_logs GROUP BY hour
+        """
+    ]
+
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+
+    async with aiohttp.ClientSession() as s:
+        for q in queries:
+            try:
+                async with s.post(url, data=q, headers=headers) as resp:
+                    await resp.text()
+            except Exception:
+                pass
+
+    _nginx_tables_created = True
+
+
+@app.post("/api/admin/nginx-logs/setup")
+async def nginx_logs_setup(user=Depends(require_role("super_admin", "admin"))):
+    """Create nginx_logs table and materialized views (manual trigger)."""
+    global _nginx_tables_created
+    _nginx_tables_created = False
+    await ensure_nginx_tables()
+    return {"message": "Nginx tables created successfully"}
+
+
+# ── Routes: Nginx Logs (admin / super_admin only) ─────────────────────────────
+
+@app.get("/api/admin/nginx-logs/overview")
+async def nginx_overview(
+    hours: int = Query(default=24, ge=1, le=168),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+    cache_key = f"nginx:overview:{hours}"
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+    query = f"""
+        SELECT count() AS total,
+               countIf(status >= 500) / count() * 100 AS error_rate,
+               avg(request_time)          AS avg_time,
+               quantile(0.95)(request_time) AS p95_time,
+               sum(bytes_sent)            AS total_bytes
+        FROM logs.nginx_logs
+        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, data=query,
+                          headers={"X-ClickHouse-User": CH_USER,
+                                   "X-ClickHouse-Key": CH_PASS}) as resp:
+            row = (await resp.json(content_type=None))["data"][0]
+
+    result = {
+        "total_requests":    int(row["total"]),
+        "error_rate":        round(float(row["error_rate"]), 2),
+        "avg_response_time": round(float(row["avg_time"]), 4),
+        "p95_response_time": round(float(row["p95_time"]), 4),
+        "total_bytes":       int(row["total_bytes"]),
+    }
+    if redis_client:
+        await redis_client.setex(cache_key, 30, json.dumps(result))
+    return result
+
+
+@app.get("/api/admin/nginx-logs/traffic")
+async def nginx_traffic(
+    hours: int = Query(default=6, ge=1, le=48),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+    cache_key = f"nginx:traffic:{hours}"
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+    query = f"""
+        SELECT minute, status, sum(count) AS count
+        FROM logs.nginx_status_mv_target
+        WHERE minute >= now() - INTERVAL {int(hours)} HOUR
+        GROUP BY minute, status
+        ORDER BY minute ASC
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, data=query,
+                          headers={"X-ClickHouse-User": CH_USER,
+                                   "X-ClickHouse-Key": CH_PASS}) as resp:
+            result = (await resp.json(content_type=None))["data"]
+
+    if redis_client:
+        await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
+    return result
+
+
+@app.get("/api/admin/nginx-logs/top-paths")
+async def nginx_top_paths(
+    hours: int = Query(default=24, ge=1, le=168),
+    limit: int = Query(default=20, ge=1, le=100),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+    cache_key = f"nginx:top_paths:{hours}:{limit}"
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+    query = f"""
+        SELECT path, sum(count) AS total, avg(avg_time) AS avg_time, sum(error_count) AS errors
+        FROM logs.nginx_top_paths_mv_target
+        WHERE hour >= now() - INTERVAL {int(hours)} HOUR
+        GROUP BY path ORDER BY total DESC
+        LIMIT {int(limit)}
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, data=query,
+                          headers={"X-ClickHouse-User": CH_USER,
+                                   "X-ClickHouse-Key": CH_PASS}) as resp:
+            result = (await resp.json(content_type=None))["data"]
+
+    if redis_client:
+        await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
+    return result
+
+
+@app.get("/api/admin/nginx-logs/top-ips")
+async def nginx_top_ips(
+    hours: int = Query(default=24, ge=1, le=168),
+    limit: int = Query(default=20, ge=1, le=100),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+    cache_key = f"nginx:top_ips:{hours}:{limit}"
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+    query = f"""
+        SELECT remote_addr, count() AS total,
+               countIf(status >= 400) AS errors,
+               avg(request_time) AS avg_time,
+               max(timestamp) AS last_seen
+        FROM logs.nginx_logs
+        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
+        GROUP BY remote_addr ORDER BY total DESC
+        LIMIT {int(limit)}
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, data=query,
+                          headers={"X-ClickHouse-User": CH_USER,
+                                   "X-ClickHouse-Key": CH_PASS}) as resp:
+            result = (await resp.json(content_type=None))["data"]
+
+    if redis_client:
+        await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
+    return result
+
+
+@app.get("/api/admin/nginx-logs/hourly")
+async def nginx_hourly(
+    days: int = Query(default=7, ge=1, le=30),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+    cache_key = f"nginx:hourly:{days}"
+    if redis_client:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+    query = f"""
+        SELECT hour, sum(total) AS total, sum(errors) AS errors,
+               sum(client_err) AS client_err, sum(bytes_total) AS bytes_total,
+               avg(avg_time) AS avg_time
+        FROM logs.nginx_hourly_mv_target
+        WHERE hour >= now() - INTERVAL {int(days)} DAY
+        GROUP BY hour ORDER BY hour ASC
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, data=query,
+                          headers={"X-ClickHouse-User": CH_USER,
+                                   "X-ClickHouse-Key": CH_PASS}) as resp:
+            result = (await resp.json(content_type=None))["data"]
+
+    if redis_client:
+        await redis_client.setex(cache_key, 300, json.dumps(result, default=str))
+    return result
+
+
+@app.get("/api/admin/nginx-logs/logs")
+async def nginx_logs_query(
+    hours: int              = Query(default=24, ge=1, le=168),
+    status_code: Optional[int]   = Query(default=None, alias="status"),
+    method: Optional[str]        = Query(default=None),
+    path_contains: Optional[str] = Query(default=None),
+    remote_addr: Optional[str]   = Query(default=None),
+    min_response_time: Optional[float] = Query(default=None),
+    from_time: Optional[str]   = Query(default=None),
+    to_time: Optional[str]     = Query(default=None),
+    page: int               = Query(default=1, ge=1),
+    page_size: int          = Query(default=50, ge=1, le=500),
+    order: str              = Query(default="desc"),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    await ensure_nginx_tables()
+
+    conditions = [f"timestamp >= now() - INTERVAL {int(hours)} HOUR"]
+    if status_code is not None:
+        conditions.append(f"status = {int(status_code)}")
+    if method:
+        conditions.append(f"method = '{method.upper().replace(chr(39), '')}'")
+    if path_contains:
+        conditions.append(f"path LIKE '%{path_contains.replace(chr(39), chr(39)*2)}%'")
+    if remote_addr:
+        conditions.append(f"remote_addr = '{remote_addr.replace(chr(39), '')}'")
+    if min_response_time is not None:
+        conditions.append(f"request_time >= {float(min_response_time)}")
+    if from_time:
+        conditions.append(f"timestamp >= toDateTime('{from_time}', 'Asia/Bangkok')")
+    if to_time:
+        conditions.append(f"timestamp <= toDateTime('{to_time}', 'Asia/Bangkok')")
+
+    where     = " AND ".join(conditions)
+    offset    = (page - 1) * page_size
+    order_dir = "DESC" if order == "desc" else "ASC"
+    url       = f"http://{CH_HOST}:{CH_PORT}/"
+    headers   = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url,
+                          data=f"SELECT count() AS c FROM logs.nginx_logs WHERE {where} FORMAT JSON",
+                          headers=headers) as resp:
+            text = await resp.text()
+            if text:
+                data = (await resp.json(content_type=None)).get("data", [])
+                total = int(data[0]["c"]) if data else 0
+            else:
+                total = 0
+
+        async with s.post(url, headers=headers, data=f"""
+            SELECT timestamp, source_host, remote_addr, method,
+                   path, path_raw, status, bytes_sent, request_time,
+                   user_agent, referer
+            FROM logs.nginx_logs
+            WHERE {where}
+            ORDER BY timestamp {order_dir}
+            LIMIT {int(page_size)} OFFSET {int(offset)}
+            FORMAT JSON
+        """) as resp:
+            text = await resp.text()
+            rows = (await resp.json(content_type=None)).get("data", []) if text else []
+
+    return {
+        "data":      rows,
+        "total":     total,
+        "page":      page,
+        "page_size": page_size,
+        "pages":     (total + page_size - 1) // page_size,
+    }
 
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/api/health", dependencies=[Depends(rate_limit_api)])

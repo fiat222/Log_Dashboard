@@ -90,6 +90,7 @@
           <button id="tab-analytics" class="tab-btn">📊 Analytics</button>
           <!-- Admin only -->
           <button id="tab-admin" class="tab-btn hidden" title="Admin Panel">🛡 Admin</button>
+          <button id="tab-nginx" class="tab-btn hidden" title="Nginx Logs">🌐 Nginx</button>
         </div>
 
         <div class="metric-card" id="m-total" style="margin-left: auto;">
@@ -295,6 +296,118 @@
             <button id="btn-prev" class="btn-ghost" disabled>← Prev</button>
             <span id="page-info">Page 1</span>
             <button id="btn-next" class="btn-ghost">Next →</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Nginx View -->
+      <div id="nginx-view-wrapper" class="hidden" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+        <section id="nginx-filter-bar">
+          <div class="filter-group">
+            <label for="nginx-search-input">Search</label>
+            <input id="nginx-search-input" type="search" placeholder="Search path..." autocomplete="off" />
+          </div>
+          <div class="filter-group">
+            <label for="nginx-status-select">Status</label>
+            <select id="nginx-status-select">
+              <option value="">All status</option>
+              <option value="200">200 OK</option>
+              <option value="201">201 Created</option>
+              <option value="204">204 No Content</option>
+              <option value="301">301 Moved</option>
+              <option value="302">302 Found</option>
+              <option value="304">304 Not Modified</option>
+              <option value="400">400 Bad Request</option>
+              <option value="401">401 Unauthorized</option>
+              <option value="403">403 Forbidden</option>
+              <option value="404">404 Not Found</option>
+              <option value="500">500 Internal Error</option>
+              <option value="502">502 Bad Gateway</option>
+              <option value="503">503 Unavailable</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="nginx-method-select">Method</label>
+            <select id="nginx-method-select">
+              <option value="">All methods</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="nginx-sort-select">Sort</label>
+            <select id="nginx-sort-select">
+              <option value="desc">Newest first</option>
+              <option value="asc">Oldest first</option>
+            </select>
+          </div>
+          <div class="filter-group custom-dt-group">
+            <label>From</label>
+            <div class="custom-datetime">
+              <input id="nginx-range-from-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="nginx-range-from-hour" class="time-select"></select>
+                  <span class="time-label">Hour</span>
+                </div>
+                <div class="time-col">
+                  <select id="nginx-range-from-minute" class="time-select"></select>
+                  <span class="time-label">Minute</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="filter-group custom-dt-group">
+            <label>To</label>
+            <div class="custom-datetime">
+              <input id="nginx-range-to-date" type="date" />
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="nginx-range-to-hour" class="time-select"></select>
+                  <span class="time-label">Hour</span>
+                </div>
+                <div class="time-col">
+                  <select id="nginx-range-to-minute" class="time-select"></select>
+                  <span class="time-label">Minute</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button id="btn-nginx-apply" class="btn-primary">Apply</button>
+          <button id="btn-nginx-reset" class="btn-ghost">Reset</button>
+          <button id="btn-nginx-refresh" class="btn-secondary">↻ Refresh</button>
+        </section>
+
+        <section id="nginx-table-section">
+          <div id="nginx-table-status"></div>
+          <div class="table-wrapper">
+            <table id="nginx-log-table">
+              <thead>
+                <tr>
+                  <th class="col-ip">Client IP</th>
+                  <th class="col-ts">Timestamp</th>
+                  <th class="col-method">Method</th>
+                  <th class="col-path">Path</th>
+                  <th class="col-status">Status</th>
+                  <th class="col-bytes">Bytes</th>
+                  <th class="col-time">Time</th>
+                </tr>
+              </thead>
+              <tbody id="nginx-log-body">
+                <tr>
+                  <td colspan="7" class="empty-state">Loading nginx logs…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="nginx-pagination">
+            <button id="btn-nginx-prev" class="btn-ghost" disabled>← Prev</button>
+            <span id="nginx-page-info">Page 1</span>
+            <button id="btn-nginx-next" class="btn-ghost">Next →</button>
           </div>
         </section>
       </div>

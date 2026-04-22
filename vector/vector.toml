@@ -29,7 +29,7 @@ source = '''
       abort  # drop unparseable lines silently
     }
   }
-  . = merge(., parsed)
+  . = merge!(., parsed)
 
   # ── Timestamp ──────────────────────────────────────────────────────────────
   if exists(.time) {
@@ -46,7 +46,7 @@ source = '''
 
   # ── Normalize path: strip query string for grouping ────────────────────────
   .path_raw = .path                     # keep original (with query string)
-  .path     = replace(.path, r'\?.*', "")
+  .path     = replace!(.path, r'\?.*', "")
 
   # ── Host metadata ──────────────────────────────────────────────────────────
   .source_host = get_hostname!()
@@ -63,9 +63,9 @@ type   = "filter"
 inputs = ["parse_and_enrich"]
 # Drop health checks, readiness probes, and static assets
 condition = '''
-  !includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], .path)
-  && !starts_with(.path, "/static/")
-  && !starts_with(.path, "/assets/")
+  !includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], .path) &&
+  !starts_with(.path, "/static/") &&
+  !starts_with(.path, "/assets/")
 '''
 
 # ── Sink: Redis on VM5 ────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ data_type = "list"
 
   [sinks.redis_vm_log_dashboard.buffer]
   type     = "disk"             # persist buffer on disk — survives vector restart
-  max_size = 268435456          # 256MB
+  max_size = 536870912          # 512MB (Vector minimum is 268435488)
   when_full = "block"
 
 # ── (Optional) Dead-letter: log parse errors locally ─────────────────────────

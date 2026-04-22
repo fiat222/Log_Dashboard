@@ -664,13 +664,14 @@ ch_circuit = CircuitBreaker()
 # ── App Lifecycle & Rate Limiting ─────────────────────────────────────────────
 scheduler = AsyncIOScheduler()
 redis_client: redis_async.Redis = None
+_nginx_ingester_task: asyncio.Task = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client
+    global redis_client, _nginx_ingester_task
     redis_host = os.getenv("REDIS_HOST", "redis")
     redis_client = redis_async.Redis(host=redis_host, port=6379, decode_responses=True)
-    
+
     await init_db()
     # ตรวจจับ Error จากคำใน Log (Regex)
     scheduler.add_job(check_critical_logs, "interval", seconds=30, id="critical_checker")
@@ -680,10 +681,13 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_container_downtime, "interval", seconds=60, id="downtime_checker")
     # แม็พ Container จาก Registry เข้ากับ SSO Users แบบอัตโนมัติ
     scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
-    
+
     scheduler.start()
+    _nginx_ingester_task = asyncio.create_task(nginx_log_ingester())
     log.info("Scheduler started — checking logs and container health")
     yield
+    if _nginx_ingester_task:
+        _nginx_ingester_task.cancel()
     scheduler.shutdown(wait=False)
     if redis_client:
         await redis_client.aclose()
@@ -1538,6 +1542,91 @@ async def trigger_backup(user=Depends(require_role("super_admin", "admin"))):
         log.exception("trigger_backup error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+# ── Nginx Ingester ────────────────────────────────────────────────────────────
+NGINX_REDIS_KEY    = "nginx"
+NGINX_BATCH_SIZE   = 200
+NGINX_FLUSH_SECS   = 5
+
+
+def _fmt_ts(ts_val) -> str:
+    """Format any timestamp value to ClickHouse DateTime64 string."""
+    try:
+        if isinstance(ts_val, str):
+            dt = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+        elif isinstance(ts_val, (int, float)):
+            dt = datetime.fromtimestamp(ts_val, tz=timezone.utc)
+        else:
+            dt = datetime.now(timezone.utc)
+    except Exception:
+        dt = datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+async def nginx_log_ingester():
+    """BLPOP nginx events from Redis and batch-insert into ClickHouse."""
+    await ensure_nginx_tables()
+    url     = f"http://{CH_HOST}:{CH_PORT}/"
+    headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+
+    while True:
+        batch: list[dict] = []
+        deadline = asyncio.get_event_loop().time() + NGINX_FLUSH_SECS
+
+        while len(batch) < NGINX_BATCH_SIZE:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                result = await redis_client.blpop(NGINX_REDIS_KEY, timeout=max(1, int(remaining)))
+            except Exception as e:
+                log.debug("nginx_ingester redis error: %s", e)
+                await asyncio.sleep(2)
+                break
+            if result is None:
+                break
+            try:
+                batch.append(json.loads(result[1]))
+            except Exception:
+                continue
+
+        if not batch:
+            continue
+
+        payload = "\n".join(
+            json.dumps({
+                "timestamp":    _fmt_ts(e.get("timestamp")),
+                "source_host":  str(e.get("source_host", ""))[:128],
+                "remote_addr":  str(e.get("remote_addr", ""))[:45],
+                "method":       str(e.get("method", ""))[:10],
+                "path":         str(e.get("path", ""))[:2048],
+                "path_raw":     str(e.get("path_raw", e.get("path", "")))[:4096],
+                "status":       int(e.get("status", 0)),
+                "bytes_sent":   int(e.get("bytes_sent", 0)),
+                "request_time": float(e.get("request_time", 0.0)),
+                "user_agent":   str(e.get("user_agent", ""))[:512],
+                "referer":      str(e.get("referer", "-"))[:512],
+            })
+            for e in batch
+        )
+
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    url,
+                    params={"query": "INSERT INTO logs.nginx_logs FORMAT JSONEachRow", "database": "logs"},
+                    data=payload.encode(),
+                    headers={**headers, "Content-Type": "application/x-ndjson"},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        log.error("nginx_ingester insert error (%d): %s", resp.status, body[:300])
+                    else:
+                        log.debug("nginx_ingester: inserted %d rows", len(batch))
+        except Exception as e:
+            log.warning("nginx_ingester insert failed: %s", e)
+
+
 # ── Nginx Tables Helper ───────────────────────────────────────────────────────────
 _nginx_tables_created = False
 
@@ -1552,10 +1641,11 @@ async def ensure_nginx_tables():
         CREATE TABLE IF NOT EXISTS logs.nginx_logs
         (
             timestamp       DateTime64(3, 'Asia/Bangkok'),
-            host            LowCardinality(String),
+            source_host     LowCardinality(String),
             remote_addr     String,
             method          LowCardinality(String),
             path            String,
+            path_raw        String,
             status          UInt16,
             bytes_sent      UInt64,
             request_time    Float32,
@@ -1564,10 +1654,12 @@ async def ensure_nginx_tables():
         )
         ENGINE = MergeTree()
         PARTITION BY toYYYYMM(timestamp)
-        ORDER BY (timestamp, host, status)
+        ORDER BY (timestamp, source_host, status)
         TTL toDateTime(timestamp) + INTERVAL 90 DAY
         SETTINGS merge_with_ttl_timeout = 86400
         """,
+        "ALTER TABLE logs.nginx_logs ADD COLUMN IF NOT EXISTS source_host LowCardinality(String) DEFAULT ''",
+        "ALTER TABLE logs.nginx_logs ADD COLUMN IF NOT EXISTS path_raw String DEFAULT ''",
         """
         CREATE TABLE IF NOT EXISTS logs.nginx_status_mv_target
         (
@@ -1685,18 +1777,22 @@ async def nginx_overview(
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, data=query,
-                          headers={"X-ClickHouse-User": CH_USER,
-                                   "X-ClickHouse-Key": CH_PASS}) as resp:
-            row = (await resp.json(content_type=None))["data"][0]
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=query,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                row = data[0] if data else {}
+    except Exception:
+        row = {"total": 0, "error_rate": 0, "avg_time": 0, "p95_time": 0, "total_bytes": 0}
 
     result = {
-        "total_requests":    int(row["total"]),
-        "error_rate":        round(float(row["error_rate"]), 2),
-        "avg_response_time": round(float(row["avg_time"]), 4),
-        "p95_response_time": round(float(row["p95_time"]), 4),
-        "total_bytes":       int(row["total_bytes"]),
+        "total_requests":    int(row.get("total", 0)),
+        "error_rate":        round(float(row.get("error_rate", 0)), 2),
+        "avg_response_time": round(float(row.get("avg_time", 0)), 4),
+        "p95_response_time": round(float(row.get("p95_time", 0)), 4),
+        "total_bytes":       int(row.get("total_bytes", 0)),
     }
     if redis_client:
         await redis_client.setex(cache_key, 30, json.dumps(result))
@@ -1724,11 +1820,15 @@ async def nginx_traffic(
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, data=query,
-                          headers={"X-ClickHouse-User": CH_USER,
-                                   "X-ClickHouse-Key": CH_PASS}) as resp:
-            result = (await resp.json(content_type=None))["data"]
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=query,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                result = data if data else []
+    except Exception:
+        result = []
 
     if redis_client:
         await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
@@ -1757,11 +1857,15 @@ async def nginx_top_paths(
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, data=query,
-                          headers={"X-ClickHouse-User": CH_USER,
-                                   "X-ClickHouse-Key": CH_PASS}) as resp:
-            result = (await resp.json(content_type=None))["data"]
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=query,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                result = data if data else []
+    except Exception:
+        result = []
 
     if redis_client:
         await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
@@ -1793,11 +1897,15 @@ async def nginx_top_ips(
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, data=query,
-                          headers={"X-ClickHouse-User": CH_USER,
-                                   "X-ClickHouse-Key": CH_PASS}) as resp:
-            result = (await resp.json(content_type=None))["data"]
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=query,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                result = data if data else []
+    except Exception:
+        result = []
 
     if redis_client:
         await redis_client.setex(cache_key, 60, json.dumps(result, default=str))
@@ -1826,11 +1934,15 @@ async def nginx_hourly(
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, data=query,
-                          headers={"X-ClickHouse-User": CH_USER,
-                                   "X-ClickHouse-Key": CH_PASS}) as resp:
-            result = (await resp.json(content_type=None))["data"]
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=query,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                result = data if data else []
+    except Exception:
+        result = []
 
     if redis_client:
         await redis_client.setex(cache_key, 300, json.dumps(result, default=str))
@@ -1877,28 +1989,32 @@ async def nginx_logs_query(
     headers   = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
 
     async with aiohttp.ClientSession() as s:
-        async with s.post(url,
-                          data=f"SELECT count() AS c FROM logs.nginx_logs WHERE {where} FORMAT JSON",
-                          headers=headers) as resp:
-            text = await resp.text()
-            if text:
-                data = (await resp.json(content_type=None)).get("data", [])
+        try:
+            async with s.post(url,
+                              data=f"SELECT count() AS c FROM logs.nginx_logs WHERE {where} FORMAT JSON",
+                              headers=headers) as resp:
+                body = await resp.text()
+                data = json.loads(body).get("data", []) if body else []
                 total = int(data[0]["c"]) if data else 0
-            else:
-                total = 0
+        except Exception:
+            total = 0
 
-        async with s.post(url, headers=headers, data=f"""
-            SELECT timestamp, source_host, remote_addr, method,
-                   path, path_raw, status, bytes_sent, request_time,
-                   user_agent, referer
-            FROM logs.nginx_logs
-            WHERE {where}
-            ORDER BY timestamp {order_dir}
-            LIMIT {int(page_size)} OFFSET {int(offset)}
-            FORMAT JSON
-        """) as resp:
-            text = await resp.text()
-            rows = (await resp.json(content_type=None)).get("data", []) if text else []
+        rows = []
+        try:
+            async with s.post(url, headers=headers, data=f"""
+                SELECT timestamp, source_host, remote_addr, method,
+                       path, path_raw, status, bytes_sent, request_time,
+                       user_agent, referer
+                FROM logs.nginx_logs
+                WHERE {where}
+                ORDER BY timestamp {order_dir}
+                LIMIT {int(page_size)} OFFSET {int(offset)}
+                FORMAT JSON
+            """) as resp:
+                body = await resp.text()
+                rows = json.loads(body).get("data", []) if body else []
+        except Exception:
+            rows = []
 
     return {
         "data":      rows,

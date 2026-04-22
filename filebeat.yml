@@ -94,7 +94,7 @@ processors:
 # ── Output: Redis ─────────────────────────────────────────────────────────────
 output.redis:
   hosts: ["${REDIS_HOST:redis}:${REDIS_PORT:6379}"]
-  key: "filebeat"          # RPUSH to this list; ingester BLPOPs from it
+  key: "${REDIS_KEY:docker}"   # RPUSH to this list; ingester BLPOPs from it
   db: 0
   timeout: 5
   # Batch settings — tune for throughput vs. latency

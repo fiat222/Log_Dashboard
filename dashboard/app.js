@@ -293,6 +293,8 @@ function renderSidebar() {
   allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Containers</span>`;
   allItem.addEventListener("click", () => {
     state.selectedStack = null; state.stackNames = []; state.page = 0;
+    stopLogsSSE();
+    if (state.view === "logs") startLogsSSE();
     loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
   });
   folderList.appendChild(allItem);
@@ -440,6 +442,8 @@ function renderSidebar() {
 
 function selectStack(stackName, containerNames) {
   state.selectedStack = stackName; state.stackNames = containerNames || []; state.page = 0;
+  stopLogsSSE();
+  if (state.view === "logs") startLogsSSE();
   loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
 }
 
@@ -604,6 +608,124 @@ function renderPagination(totalPages) {
 const NGINX_PAGE_SIZE = 50;
 let nginxPage = 0;
 let nginxTotalRows = 0;
+let logsSSE = null;
+let nginxSSE = null;
+
+function canLiveLogs() {
+  return state.sortDir === "DESC" && state.page === 0 && !state.fromDate && !state.toDate;
+}
+
+function setLiveBadge(tableStatusId, active) {
+  const statusEl = el(tableStatusId);
+  if (!statusEl) return;
+  const existing = statusEl.querySelector(".live-badge");
+  if (active && !existing) {
+    const badge = document.createElement("span");
+    badge.className = "live-badge";
+    badge.textContent = "● LIVE";
+    statusEl.appendChild(badge);
+  } else if (!active && existing) {
+    existing.remove();
+  }
+}
+
+function startLogsSSE() {
+  stopLogsSSE();
+  if (state.view !== "logs" || !canLiveLogs()) return;
+  const params = new URLSearchParams();
+  if (state.stackNames.length > 0) params.set("container_names", state.stackNames.join(","));
+  if (state.level) params.set("level", state.level);
+  if (state.search) params.set("search", state.search);
+  logsSSE = new EventSource(`${API_BASE}/logs/stream?${params}`, { withCredentials: true });
+  logsSSE.onopen = () => setLiveBadge("table-status", true);
+  logsSSE.onmessage = (e) => {
+    try {
+      const { rows } = JSON.parse(e.data);
+      if (rows?.length) prependLogRows(rows);
+    } catch { }
+  };
+  logsSSE.onerror = () => {
+    setLiveBadge("table-status", false);
+    logsSSE?.close(); logsSSE = null;
+    setTimeout(() => { if (state.view === "logs") startLogsSSE(); }, 10_000);
+  };
+}
+
+function stopLogsSSE() {
+  if (logsSSE) { logsSSE.close(); logsSSE = null; }
+  setLiveBadge("table-status", false);
+}
+
+function prependLogRows(newRows) {
+  const tbody = el("log-body");
+  if (!tbody || tbody.querySelector(".empty-state")) return;
+  [...newRows].reverse().forEach(([ts, cname, level, msg]) => {
+    const lvl = (level || "").toLowerCase();
+    const rowCls = lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "";
+    const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
+    const displayName = containerAliases[cname] || cname;
+    const tr = document.createElement("tr");
+    tr.className = (rowCls + " row-new").trim();
+    tr.innerHTML = `<td class="td-ts">${formatTs(ts)}</td><td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td><td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td><td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>`;
+    tbody.insertBefore(tr, tbody.firstChild);
+  });
+  while (tbody.rows.length > PAGE_SIZE) tbody.deleteRow(tbody.rows.length - 1);
+  state.totalRows += newRows.length;
+  const totalPages = Math.max(1, Math.ceil(state.totalRows / PAGE_SIZE));
+  const statusEl = el("table-status");
+  if (statusEl) {
+    const textNode = statusEl.childNodes[0];
+    if (textNode?.nodeType === Node.TEXT_NODE)
+      textNode.textContent = `${fmt(state.totalRows)} rows  ·  Page ${state.page + 1} of ${totalPages}`;
+  }
+}
+
+function startNginxSSE() {
+  stopNginxSSE();
+  if (state.view !== "nginx") return;
+  nginxSSE = new EventSource(`${API_BASE}/nginx/stream`, { withCredentials: true });
+  nginxSSE.onopen = () => setLiveBadge("nginx-table-status", true);
+  nginxSSE.onmessage = (e) => {
+    try {
+      const { rows } = JSON.parse(e.data);
+      if (rows?.length) prependNginxRows(rows);
+    } catch { }
+  };
+  nginxSSE.onerror = () => {
+    setLiveBadge("nginx-table-status", false);
+    nginxSSE?.close(); nginxSSE = null;
+    setTimeout(() => { if (state.view === "nginx") startNginxSSE(); }, 10_000);
+  };
+}
+
+function stopNginxSSE() {
+  if (nginxSSE) { nginxSSE.close(); nginxSSE = null; }
+  setLiveBadge("nginx-table-status", false);
+}
+
+function prependNginxRows(newRows) {
+  const tbody = el("nginx-log-body");
+  if (!tbody || tbody.querySelector(".empty-state")) return;
+  [...newRows].reverse().forEach(([ts, ip, method, referer, path, status, bytes, time]) => {
+    const statusNum = parseInt(status) || 0;
+    const cls = statusNum >= 500 ? "row-error" : statusNum >= 400 ? "row-warn" : "";
+    const refStr = String(referer);
+    const refDisplay = refStr === "-" || !refStr ? "-" : escHtml(refStr.slice(0, 100));
+    const tr = document.createElement("tr");
+    tr.className = (cls + " row-new").trim();
+    tr.innerHTML = `<td class="td-ip">${escHtml(String(ip))}</td><td class="td-ts">${formatTs(ts)}</td><td>${escHtml(method)}</td><td class="td-referer" title="${refStr === "-" ? "" : escHtml(refStr)}">${refDisplay}</td><td class="td-path" title="${escHtml(path)}">${escHtml(String(path).slice(0, 80))}</td><td><span class="badge ${statusNum >= 500 ? "badge-error" : statusNum >= 400 ? "badge-warn" : "badge-info"}">${statusNum}</span></td><td>${fmt(bytes)}</td><td>${parseFloat(time || 0).toFixed(4)}s</td>`;
+    tbody.insertBefore(tr, tbody.firstChild);
+  });
+  while (tbody.rows.length > NGINX_PAGE_SIZE) tbody.deleteRow(tbody.rows.length - 1);
+  nginxTotalRows += newRows.length;
+  const totalPages = Math.max(1, Math.ceil(nginxTotalRows / NGINX_PAGE_SIZE));
+  const statusEl = el("nginx-table-status");
+  if (statusEl) {
+    const textNode = statusEl.childNodes[0];
+    if (textNode?.nodeType === Node.TEXT_NODE)
+      textNode.textContent = `${fmt(nginxTotalRows)} rows  ·  Page ${nginxPage + 1} of ${totalPages}`;
+  }
+}
 
 function buildNginxWhere() {
   const cond = ["timestamp >= now() - INTERVAL 24 HOUR"];
@@ -681,13 +803,16 @@ function renderNginxTable(rows) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No nginx logs found for the current filters.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map(([ts, ip, method, path, status, bytes, time]) => {
+  tbody.innerHTML = rows.map(([ts, ip, method, referer, path, status, bytes, time]) => {
     const statusNum = parseInt(status) || 0;
     const cls = statusNum >= 500 ? "row-error" : statusNum >= 400 ? "row-warn" : "";
+    referer = String(referer);
+    const refererDisplay = referer === "-" || !referer ? "-" : escHtml(referer.slice(0, 100));
     return `<tr class="${cls}">
       <td class="td-ip">${escHtml(String(ip))}</td>
       <td class="td-ts">${formatTs(ts)}</td>
       <td>${escHtml(method)}</td>
+      <td class="td-referer" title="${referer === "-" ? "" : escHtml(referer)}">${refererDisplay}</td>
       <td class="td-path" title="${escHtml(path)}">${escHtml(String(path).slice(0, 80))}</td>
       <td><span class="badge ${statusNum >= 500 ? "badge-error" : statusNum >= 400 ? "badge-warn" : "badge-info"}">${statusNum}</span></td>
       <td>${fmt(bytes)}</td>
@@ -700,6 +825,125 @@ function renderNginxPagination(totalPages) {
   el("btn-nginx-prev").disabled = nginxPage === 0;
   el("btn-nginx-next").disabled = nginxPage >= totalPages - 1;
   el("nginx-page-info").textContent = `Page ${nginxPage + 1} / ${totalPages}`;
+}
+
+// ── Nginx Analytics ───────────────────────────────────────────────────────────
+let nginxChartTraffic = null;
+let nginxAnalyticsHours = 24;
+
+function fmtBytes(b) {
+  b = parseInt(b) || 0;
+  if (b >= 1e9) return (b / 1e9).toFixed(1) + " GB";
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + " KB";
+  return b + " B";
+}
+
+async function loadNginxOverview() {
+  try {
+    const res = await fetch(`${API_BASE}/admin/nginx-logs/overview?hours=${nginxAnalyticsHours}`, { credentials: "include" });
+    if (!res.ok) return;
+    const d = await res.json();
+    el("nx-total").textContent = fmt(d.total_requests || 0);
+    const errRate = parseFloat(d.error_rate || 0);
+    el("nx-error-rate").textContent = errRate.toFixed(1) + "%";
+    el("nx-error-rate").closest(".metric-card").className = "metric-card" + (errRate > 5 ? " error" : errRate > 1 ? " warn" : "");
+    el("nx-avg-time").textContent = Math.round((d.avg_response_time || 0) * 1000) + " ms";
+    el("nx-p95-time").textContent = Math.round((d.p95_response_time || 0) * 1000) + " ms";
+    el("nx-bytes").textContent = fmtBytes(d.total_bytes || 0);
+  } catch (e) { console.error("nginx overview:", e); }
+}
+
+async function loadNginxTraffic() {
+  if (!window.Chart) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/nginx-logs/traffic?hours=${Math.min(nginxAnalyticsHours, 48)}`, { credentials: "include" });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const minuteMap = {};
+    for (const r of rows) {
+      const k = String(r.minute);
+      if (!minuteMap[k]) minuteMap[k] = { ok: 0, warn: 0, err: 0 };
+      const s = parseInt(r.status);
+      const c = parseInt(r.count) || 0;
+      if (s >= 500) minuteMap[k].err += c;
+      else if (s >= 400) minuteMap[k].warn += c;
+      else minuteMap[k].ok += c;
+    }
+    const keys = Object.keys(minuteMap).sort();
+    const fmtLbl = k => { const d = new Date(k); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+    if (nginxChartTraffic) nginxChartTraffic.destroy();
+    Chart.defaults.color = "#64748b"; Chart.defaults.font.family = "'Inter', sans-serif";
+    nginxChartTraffic = new Chart(el("nginx-chart-traffic"), {
+      type: "line",
+      data: {
+        labels: keys.map(fmtLbl),
+        datasets: [
+          { label: "2xx", data: keys.map(k => minuteMap[k].ok),   borderColor: "#059669", backgroundColor: "rgba(5,150,105,0.1)",   fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+          { label: "4xx", data: keys.map(k => minuteMap[k].warn), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,0.08)",   fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+          { label: "5xx", data: keys.map(k => minuteMap[k].err),  borderColor: "#e11d48", backgroundColor: "rgba(225,29,72,0.12)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+        scales: {
+          y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" } },
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 10 } } }
+        }
+      }
+    });
+  } catch (e) { console.error("nginx traffic:", e); }
+}
+
+async function loadNginxTopPaths() {
+  try {
+    const res = await fetch(`${API_BASE}/admin/nginx-logs/top-paths?hours=${nginxAnalyticsHours}&limit=15`, { credentials: "include" });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const tbody = el("nginx-top-paths-body");
+    if (!rows.length) { tbody.innerHTML = `<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No data</td></tr>`; return; }
+    tbody.innerHTML = rows.map(r => {
+      const errs = parseInt(r.errors || 0);
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:4px 8px; font-family:monospace; word-break:break-all; max-width:400px;">${escHtml(String(r.path || ""))}</td>
+        <td style="padding:4px 8px; text-align:right;">${fmt(parseInt(r.total || 0))}</td>
+        <td style="padding:4px 8px; text-align:right; color:${errs > 0 ? "var(--error)" : "inherit"}">${fmt(errs)}</td>
+        <td style="padding:4px 8px; text-align:right;">${Math.round(parseFloat(r.avg_time || 0) * 1000)} ms</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { console.error("nginx top paths:", e); }
+}
+
+async function loadNginxTopIPs() {
+  try {
+    const res = await fetch(`${API_BASE}/admin/nginx-logs/top-ips?hours=${nginxAnalyticsHours}&limit=10`, { credentials: "include" });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const container = el("nginx-top-ips-list");
+    if (!rows.length) { container.innerHTML = `<div style="padding:8px;color:var(--text-muted)">No data</div>`; return; }
+    const maxTotal = Math.max(...rows.map(r => parseInt(r.total || 0)), 1);
+    container.innerHTML = rows.map(r => {
+      const total = parseInt(r.total || 0);
+      const errs  = parseInt(r.errors || 0);
+      const pct   = Math.round(total / maxTotal * 100);
+      const errPct = Math.round(errs / Math.max(total, 1) * 100);
+      return `<div style="padding:5px 8px; border-bottom:1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+          <span style="font-family:monospace; font-size:11px;">${escHtml(String(r.remote_addr || ""))}</span>
+          <span style="color:var(--text-muted); font-size:11px;">${fmt(total)}</span>
+        </div>
+        <div style="height:3px; background:var(--border); border-radius:2px;">
+          <div style="height:3px; width:${pct}%; background:${errPct > 30 ? "var(--error)" : errPct > 10 ? "var(--warn)" : "var(--accent)"}; border-radius:2px;"></div>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) { console.error("nginx top IPs:", e); }
+}
+
+async function loadNginxAnalytics() {
+  await Promise.all([loadNginxOverview(), loadNginxTraffic(), loadNginxTopPaths(), loadNginxTopIPs()]);
 }
 
 function resetNginxFilters() {
@@ -1322,6 +1566,8 @@ el("tab-logs").addEventListener("click", () => {
   el("analytics-section").classList.add("hidden");
   el("admin-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
+  stopNginxSSE();
+  startLogsSSE();
 });
 
 el("tab-analytics").addEventListener("click", () => {
@@ -1335,6 +1581,7 @@ el("tab-analytics").addEventListener("click", () => {
   el("admin-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
   loadAnalytics();
+  stopLogsSSE();
 });
 
 el("tab-admin").addEventListener("click", () => {
@@ -1348,6 +1595,8 @@ el("tab-admin").addEventListener("click", () => {
   el("analytics-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
   loadAdminPanel();
+  stopNginxSSE();
+  stopLogsSSE();
 });
 
 el("tab-nginx").addEventListener("click", () => {
@@ -1359,8 +1608,11 @@ el("tab-nginx").addEventListener("click", () => {
   el("nginx-view-wrapper").classList.remove("hidden");
   el("logs-view-wrapper").classList.add("hidden");
   el("analytics-section").classList.add("hidden");
+  loadNginxAnalytics();
   el("admin-section").classList.add("hidden");
+  startNginxSSE();
   loadNginxLogs();
+  stopLogsSSE();
 });
 
 // ── Tooltip helpers ───────────────────────────────────────────────────────────
@@ -1436,7 +1688,10 @@ function init() {
         state.sortDir = el("sort-select")?.value || "DESC";
         state.fromDate = getCustomDateTime("range-from");
         state.toDate = getCustomDateTime("range-to");
-        state.page = 0; loadLogs();
+        state.page = 0;
+        stopLogsSSE();
+        startLogsSSE();
+        loadLogs();
       });
     }
     el("btn-reset").addEventListener("click", () => {
@@ -1446,6 +1701,8 @@ function init() {
       setCustomDateTime("range-from", null);
       setCustomDateTime("range-to", null);
       el("sort-select").value = "DESC";
+      stopLogsSSE();
+      startLogsSSE();
       loadLogs();
     });
     el("search-input").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-apply").click(); });
@@ -1521,15 +1778,18 @@ function init() {
     });
 
     // Pagination
-    el("btn-prev").addEventListener("click", () => { state.page--; loadLogs(); });
-    el("btn-next").addEventListener("click", () => { state.page++; loadLogs(); });
+    el("btn-prev").addEventListener("click", () => { stopLogsSSE(); state.page--; startLogsSSE(); loadLogs(); });
+    el("btn-next").addEventListener("click", () => { stopLogsSSE(); state.page++; loadLogs(); });
 
     // Nginx filters
-    el("btn-nginx-apply")?.addEventListener("click", () => { nginxPage = 0; loadNginxLogs(); });
-    el("btn-nginx-reset")?.addEventListener("click", resetNginxFilters);
-    el("btn-nginx-refresh")?.addEventListener("click", loadNginxLogs);
-    el("btn-nginx-prev")?.addEventListener("click", () => { nginxPage--; loadNginxLogs(); });
-    el("btn-nginx-next")?.addEventListener("click", () => { nginxPage++; loadNginxLogs(); });
+    el("btn-nginx-apply")?.addEventListener("click", () => { stopNginxSSE(); nginxPage = 0; startNginxSSE(); loadNginxLogs(); });
+    el("btn-nginx-reset")?.addEventListener("click", () => { stopNginxSSE(); resetNginxFilters(); startNginxSSE(); });
+    el("btn-nginx-refresh")?.addEventListener("click", () => { stopNginxSSE(); startNginxSSE(); loadNginxLogs(); });
+    el("btn-nginx-prev")?.addEventListener("click", () => { stopNginxSSE(); nginxPage--; loadNginxLogs(); });
+    el("btn-nginx-next")?.addEventListener("click", () => { stopNginxSSE(); nginxPage++; loadNginxLogs(); });
+    // Nginx analytics controls
+    el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseInt(e.target.value); loadNginxAnalytics(); });
+    el("btn-nginx-analytics-refresh")?.addEventListener("click", loadNginxAnalytics);
 
     // Refresh
     el("btn-refresh").addEventListener("click", refresh);
@@ -1598,6 +1858,7 @@ function init() {
       loadNotifications();
       loadContainerAliases();
       initSSE();
+      startLogsSSE();
       refresh();
       setInterval(refresh, 30_000);
       setInterval(loadNotifications, 60_000);

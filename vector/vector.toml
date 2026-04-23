@@ -1,101 +1,110 @@
-# =============================================================================
-# vector.toml — VM-Nginx: Parse Nginx access logs → Redis (LOG DASHBOARD VM)
-# =============================================================================
-# Install: https://vector.dev/docs/setup/installation/
-# Run: vector --config /etc/vector/vector.toml
-
 [api]
 enabled = false
 
-# ── Source: Nginx access log ──────────────────────────────────────────────────
 [sources.nginx_access]
-type           = "file"
-include        = ["/var/log/nginx/access.log"]
-read_from      = "end"          # skip old logs on startup; use "beginning" to backfill
-ignore_older_secs = 86400       # ignore files untouched > 24h
+type = "file"
+include = ["/var/log/nginx/access.log"]
+read_from = "end"
+ignore_older_secs = 86400
 
-# ── Transform: Parse + enrich ─────────────────────────────────────────────────
 [transforms.parse_and_enrich]
 type   = "remap"
 inputs = ["nginx_access"]
 source = '''
-  # ── Parse JSON log format ──────────────────────────────────────────────────
-  # Requires nginx to use json_combined log format (see nginx.conf below)
+  # 1. Parsing
   parsed, err = parse_json(.message)
   if err != null {
-    # Fallback: try combined format for plain-text logs
     parsed, err = parse_nginx_log(.message, format: "combined")
     if err != null {
-      abort  # drop unparseable lines silently
+      parsed, err = parse_regex(.message, r'^(?P<client>[\d\.]+) - (?P<user>[^ ]+) \[(?P<time>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>\d+) (?P<size>\d+)')
+      if err != null {
+        msg, _ = to_string(.message)
+        log("Parse failed for line: " + msg, level: "debug")
+        abort
+      }
     }
   }
+
+  # 2. Merge
   . = merge!(., parsed)
 
-  # ── Timestamp ──────────────────────────────────────────────────────────────
+  # 3. Field Mapping
+  if exists(.client) { .remote_addr = del(.client) }
+  if exists(.agent)  { .user_agent  = del(.agent) }
+
+  # 4. Request parsing
+  req, _ = to_string(.request)
+  if req == "" {
+    req, _ = to_string(.uri)
+  }
+
+  if req != "" {
+    parts = split(req, " ")
+    .method = get(parts, [0]) ?? "GET"
+    .path   = get(parts, [1]) ?? "/"
+    del(.request)
+    del(.uri)
+  }
+
+  # 5. Timestamp
   if exists(.time) {
-    .timestamp = parse_timestamp!(.time, format: "%+")
+    ts, err = parse_timestamp(.time, format: "%d/%b/%Y:%H:%M:%S %z")
+    if err == null {
+      .timestamp = ts
+    } else {
+      .timestamp = now()
+    }
     del(.time)
-  } else {
+  } else if !exists(.timestamp) {
     .timestamp = now()
   }
 
-  # ── Type casting ───────────────────────────────────────────────────────────
-  .status       = to_int(.status)       ?? 0
-  .bytes_sent   = to_int(.bytes_sent)   ?? 0
+  # 6. Type Casting
+  .status = to_int(.status) ?? 0
+
+  val = .size
+  if val == null {
+    val = .bytes_sent
+  }
+  .bytes_sent = to_int(val) ?? 0
+
   .request_time = to_float(.request_time) ?? 0.0
 
-  # ── Normalize path: strip query string for grouping ────────────────────────
-  .path_raw = .path                     # keep original (with query string)
-  .path     = replace!(.path, r'\?.*', "")
+  # 7. Metadata cleanup
+  p = .path
+  if p == null { p = "/" }
 
-  # ── Host metadata ──────────────────────────────────────────────────────────
-  .source_host = get_hostname!()
+  p_str, _ = to_string(p)
+  .path = replace(p_str, r'\?.*', "")
 
-  # ── Clean up raw message field ─────────────────────────────────────────────
+  host, _ = get_hostname()
+  .source_host = host
+
   del(.message)
   del(.file)
   del(.host)
 '''
 
-# ── Transform: Filter noise ───────────────────────────────────────────────────
 [transforms.filter_noise]
-type   = "filter"
+type = "filter"
 inputs = ["parse_and_enrich"]
-# Drop health checks, readiness probes, and static assets
 condition = '''
-  !includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], .path) &&
-  !starts_with(.path, "/static/") &&
-  !starts_with(.path, "/assets/")
+path, _ = to_string(.path)
+!includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], path) &&
+!starts_with(path, "/static/") &&
+!starts_with(path, "/assets/")
+
 '''
 
-# ── Sink: Redis on VM5 ────────────────────────────────────────────────────────
 [sinks.redis_vm_log_dashboard]
-type      = "redis"
-inputs    = ["filter_noise"]
-url       = "redis://${REDIS_HOST}:${REDIS_PORT}"
-key       = "nginx"
+type = "redis"
+inputs = ["filter_noise"]
+url = "redis://${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
+key = "nginx"
 data_type = "list"
 
   [sinks.redis_vm_log_dashboard.list]
-  method = "rpush"              # ingester BLPOPs from left (BLPOP = LPOP)
+  method = "rpush"
 
   [sinks.redis_vm_log_dashboard.encoding]
   codec = "json"
-
-  [sinks.redis_vm_log_dashboard.batch]
-  max_events = 500
-  timeout_secs = 5
-
-  [sinks.redis_vm_log_dashboard.buffer]
-  type     = "disk"             # persist buffer on disk — survives vector restart
-  max_size = 536870912          # 512MB (Vector minimum is 268435488)
-  when_full = "block"
-
-# ── (Optional) Dead-letter: log parse errors locally ─────────────────────────
-# Uncomment to debug parse failures
-# [sinks.error_log]
-# type    = "file"
-# inputs  = ["parse_and_enrich._unmatched"]  # VRL abort lands here
-# path    = "/var/log/vector/nginx_parse_errors.log"
-#   [sinks.error_log.encoding]
-#   codec = "json"

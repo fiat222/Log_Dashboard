@@ -683,11 +683,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
 
     scheduler.start()
-    _nginx_ingester_task = asyncio.create_task(nginx_log_ingester())
     log.info("Scheduler started — checking logs and container health")
     yield
-    if _nginx_ingester_task:
-        _nginx_ingester_task.cancel()
     scheduler.shutdown(wait=False)
     if redis_client:
         await redis_client.aclose()
@@ -1524,6 +1521,137 @@ async def notifications_stream(request: Request, user=Depends(get_current_user))
                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ── Routes: Real-time Log SSE Streams ─────────────────────────────────────────
+@app.get("/api/logs/stream")
+async def logs_stream(
+    request: Request,
+    container_names: str = Query(default=""),
+    level: str = Query(default=""),
+    search: str = Query(default=""),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """SSE: push new container log rows every 3s."""
+    cnames = [c.strip() for c in container_names.split(",") if c.strip()] if container_names else []
+
+    if user.get("role") == "developer":
+        result = await db.execute(text(
+            "SELECT container_id FROM container_ownership WHERE user_id = :uid"
+        ), {"uid": user.get("user_id")})
+        owned = {row[0] for row in result.fetchall()}
+        cnames = [c for c in cnames if c in owned] if cnames else list(owned)
+    await db.close()
+
+    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=15)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def event_generator():
+        nonlocal last_ts
+        url = f"http://{CH_HOST}:{CH_PORT}/"
+        headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+        try:
+            async with aiohttp.ClientSession() as s:
+                while True:
+                    if await request.is_disconnected():
+                        break
+
+                    parts = [f"timestamp > toDateTime64('{last_ts}', 3, 'UTC')"]
+                    if cnames:
+                        safe = ",".join(f"'{c}'" for c in cnames)
+                        parts.append(f"container_name IN ({safe})")
+                    if level:
+                        parts.append(f"level = '{level.replace(chr(39), '')}'")
+                    if search:
+                        esc_s = search.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+                        parts.append(f"message ILIKE '%{esc_s}%'")
+
+                    sql = (
+                        f"SELECT timestamp, container_name, level, message, "
+                        f"formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'UTC') AS ts_utc "
+                        f"FROM container_logs WHERE {' AND '.join(parts)} "
+                        f"ORDER BY timestamp ASC LIMIT 100 FORMAT JSONCompact"
+                    )
+                    try:
+                        async with s.get(url,
+                                         params={"query": sql, "database": CH_DB},
+                                         headers=headers,
+                                         timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                rows = json.loads(await resp.text()).get("data", [])
+                                if rows:
+                                    last_ts = max(r[4] for r in rows)
+                                    out_rows = [r[:4] for r in rows]
+                                    yield f"data: {json.dumps({'rows': out_rows})}\n\n"
+                                else:
+                                    yield ": heartbeat\n\n"
+                            else:
+                                body = await resp.text()
+                                log.warning("logs/stream CH error %s: %s", resp.status, body[:200])
+                                yield f"data: {json.dumps({'error': f'CH {resp.status}'})}\n\n"
+                    except Exception as exc:
+                        log.warning("logs/stream exception: %s", exc)
+                        yield ": heartbeat\n\n"
+
+                    await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/nginx/stream")
+async def nginx_stream(
+    request: Request,
+    user=Depends(require_role("super_admin", "admin")),
+):
+    """SSE: push new nginx log rows every 2s. Admin/super_admin only."""
+    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=15)).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def event_generator():
+        nonlocal last_ts
+        url = f"http://{CH_HOST}:{CH_PORT}/"
+        headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+        try:
+            async with aiohttp.ClientSession() as s:
+                while True:
+                    if await request.is_disconnected():
+                        break
+
+                    sql = (
+                        f"SELECT timestamp, remote_addr, method, referer, path, status, bytes_sent, request_time, "
+                        f"formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'UTC') AS ts_utc "
+                        f"FROM nginx_logs WHERE timestamp > toDateTime64('{last_ts}', 3, 'UTC') "
+                        f"ORDER BY timestamp ASC LIMIT 100 FORMAT JSONCompact"
+                    )
+                    try:
+                        async with s.get(url,
+                                         params={"query": sql, "database": CH_DB},
+                                         headers=headers,
+                                         timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                rows = json.loads(await resp.text()).get("data", [])
+                                if rows:
+                                    last_ts = max(r[8] for r in rows)
+                                    out_rows = [r[:8] for r in rows]
+                                    yield f"data: {json.dumps({'rows': out_rows})}\n\n"
+                                else:
+                                    yield ": heartbeat\n\n"
+                            else:
+                                body = await resp.text()
+                                log.warning("nginx/stream CH error %s: %s", resp.status, body[:200])
+                                yield f"data: {json.dumps({'error': f'CH {resp.status}'})}\n\n"
+                    except Exception as exc:
+                        log.warning("nginx/stream exception: %s", exc)
+                        yield ": heartbeat\n\n"
+
+                    await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/api/admin/backup/trigger")
 async def trigger_backup(user=Depends(require_role("super_admin", "admin"))):
     """Admin-only: Trigger a manual backup by calling the backup service API."""
@@ -2002,14 +2130,13 @@ async def nginx_logs_query(
         rows = []
         try:
             async with s.post(url, headers=headers, data=f"""
-                SELECT timestamp, source_host, remote_addr, method,
-                       path, path_raw, status, bytes_sent, request_time,
-                       user_agent, referer
+                SELECT timestamp, remote_addr, method,
+                       referer, path, status, bytes_sent, request_time
                 FROM logs.nginx_logs
                 WHERE {where}
                 ORDER BY timestamp {order_dir}
                 LIMIT {int(page_size)} OFFSET {int(offset)}
-                FORMAT JSON
+                FORMAT JSONCompact
             """) as resp:
                 body = await resp.text()
                 rows = json.loads(body).get("data", []) if body else []

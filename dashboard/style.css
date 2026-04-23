@@ -1033,6 +1033,26 @@ select:focus {
   }
 }
 
+@keyframes liveRowFlash {
+  0%   { background: rgba(79, 70, 229, 0.18); }
+  100% { background: transparent; }
+}
+
+tr.row-new {
+  animation: liveRowFlash 2s ease-out forwards;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ef4444;
+  letter-spacing: 0.05em;
+}
+
 #log-table tbody tr:hover {
   background: var(--bg-elevated);
 }
@@ -1078,6 +1098,8 @@ select:focus {
 .col-ip { width: 130px; }
 .col-method { width: 80px; }
 .col-path { width: auto; min-width: 200px; }
+.col-referer { width: auto; min-width: 180px; max-width: 250px; }
+.td-referer { max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .col-status { width: 70px; }
 .col-bytes { width: 80px; }
 .col-time { width: 80px; }

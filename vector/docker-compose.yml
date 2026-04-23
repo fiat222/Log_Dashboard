@@ -1,6 +1,6 @@
 services:
   vector:
-    image: timberio/vector:0.38.0-alpine
+    image: timberio/vector:0.54.0-alpine
     container_name: vector_nginx
     restart: unless-stopped
     env_file:

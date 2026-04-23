@@ -871,7 +871,10 @@ async function loadNginxTraffic() {
       else minuteMap[k].ok += c;
     }
     const keys = Object.keys(minuteMap).sort();
-    const fmtLbl = k => { const d = new Date(k); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+    const fmtLbl = k => {
+      const d = new Date(k.includes("T") ? k : k.replace(" ", "T") + "Z");
+      return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+    };
     if (nginxChartTraffic) nginxChartTraffic.destroy();
     Chart.defaults.color = "#64748b"; Chart.defaults.font.family = "'Inter', sans-serif";
     nginxChartTraffic = new Chart(el("nginx-chart-traffic"), {
@@ -903,7 +906,7 @@ async function loadNginxTopPaths() {
     if (!res.ok) return;
     const rows = await res.json();
     const tbody = el("nginx-top-paths-body");
-    if (!rows.length) { tbody.innerHTML = `<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">No data</td></tr>`; return; }
+    if (!rows.length) { tbody.innerHTML = `<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No data</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => {
       const errs = parseInt(r.errors || 0);
       return `<tr style="border-bottom:1px solid var(--border);">
@@ -911,6 +914,7 @@ async function loadNginxTopPaths() {
         <td style="padding:4px 8px; text-align:right;">${fmt(parseInt(r.total || 0))}</td>
         <td style="padding:4px 8px; text-align:right; color:${errs > 0 ? "var(--error)" : "inherit"}">${fmt(errs)}</td>
         <td style="padding:4px 8px; text-align:right;">${Math.round(parseFloat(r.avg_time || 0) * 1000)} ms</td>
+        <td style="padding:4px 8px; text-align:right;">${Math.round(parseFloat(r.p95_time || 0) * 1000)} ms</td>
       </tr>`;
     }).join("");
   } catch (e) { console.error("nginx top paths:", e); }
@@ -974,7 +978,11 @@ async function loadAnalytics() {
       FROM container_logs WHERE timestamp > now() - INTERVAL 24 HOUR ${cidFilter}
       GROUP BY t ORDER BY t ASC
     `);
-    const labels = volData.map(r => { const d = new Date(r[0]); return `${String(d.getHours()).padStart(2, "0")}:00`; });
+    const labels = volData.map(r => {
+      const s = String(r[0]);
+      const d = new Date(s.includes("T") ? s : s.replace(" ", "T") + "Z");
+      return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Bangkok", hour: "2-digit", hour12: false }).format(d) + ":00";
+    });
     if (chartVol) chartVol.destroy();
     Chart.defaults.color = "#64748b"; Chart.defaults.font.family = "'Inter', sans-serif";
     chartVol = new Chart(el("chart-volume"), {

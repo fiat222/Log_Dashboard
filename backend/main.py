@@ -1977,9 +1977,11 @@ async def nginx_top_paths(
             return json.loads(cached)
 
     query = f"""
-        SELECT path, sum(count) AS total, avg(avg_time) AS avg_time, sum(error_count) AS errors
-        FROM logs.nginx_top_paths_mv_target
-        WHERE hour >= now() - INTERVAL {int(hours)} HOUR
+        SELECT path, count() AS total, avg(request_time) AS avg_time,
+               quantile(0.95)(request_time) AS p95_time,
+               countIf(status >= 400) AS errors
+        FROM logs.nginx_logs
+        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
         GROUP BY path ORDER BY total DESC
         LIMIT {int(limit)}
         FORMAT JSON

@@ -848,8 +848,6 @@ async function loadNginxOverview() {
     const errRate = parseFloat(d.error_rate || 0);
     el("nx-error-rate").textContent = errRate.toFixed(1) + "%";
     el("nx-error-rate").closest(".metric-card").className = "metric-card" + (errRate > 5 ? " error" : errRate > 1 ? " warn" : "");
-    el("nx-avg-time").textContent = Math.round((d.avg_response_time || 0) * 1000) + " ms";
-    el("nx-p95-time").textContent = Math.round((d.p95_response_time || 0) * 1000) + " ms";
     el("nx-bytes").textContent = fmtBytes(d.total_bytes || 0);
   } catch (e) { console.error("nginx overview:", e); }
 }

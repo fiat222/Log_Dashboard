@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-docusaurus@latest docs-site classic --skip-install)"
+    ]
+  }
+}

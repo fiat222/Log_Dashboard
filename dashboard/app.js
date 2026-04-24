@@ -768,7 +768,7 @@ async function loadNginxLogs() {
   params.set("page", String(nginxPage + 1));
   params.set("page_size", String(NGINX_PAGE_SIZE));
   params.set("order", order);
-  params.set("hours", "24");
+  params.set("hours", String(nginxAnalyticsHours));
   if (status) params.set("status", status);
   if (method) params.set("method", method);
   if (path) params.set("path_contains", path);
@@ -855,7 +855,7 @@ async function loadNginxOverview() {
 async function loadNginxTraffic() {
   if (!window.Chart) return;
   try {
-    const res = await fetch(`${API_BASE}/admin/nginx-logs/traffic?hours=${Math.min(nginxAnalyticsHours, 48)}`, { credentials: "include" });
+    const res = await fetch(`${API_BASE}/admin/nginx-logs/traffic?hours=${Math.min(nginxAnalyticsHours, 48)}`, { credentials: "include" });  // cap at 48h per endpoint constraint
     if (!res.ok) return;
     const rows = await res.json();
     const minuteMap = {};
@@ -1661,6 +1661,43 @@ el("btn-new-stack").addEventListener("click", () => {
 function init() {
   try {
     console.log("[INIT] Starting dashboard initialization...");
+
+    // Docs link — resolve against current origin so localhost and prod both work
+    const docsLink = el("docs-link");
+    if (docsLink) docsLink.href = window.location.origin + "/logstore/docs/";
+
+    // Docs FAB close/reopen
+    const docsFab = el("docs-fab-wrapper");
+    const docsMini = el("btn-docs-mini");
+    if (localStorage.getItem("docsFabClosed") === "1") {
+      docsFab?.classList.add("hidden");
+      docsMini?.classList.remove("hidden");
+    }
+    el("btn-docs-close")?.addEventListener("click", () => {
+      docsFab?.classList.add("hidden");
+      docsMini?.classList.remove("hidden");
+      localStorage.setItem("docsFabClosed", "1");
+    });
+    docsMini?.addEventListener("click", () => {
+      docsFab?.classList.remove("hidden");
+      docsMini?.classList.add("hidden");
+      localStorage.setItem("docsFabClosed", "0");
+    });
+
+    // Theme
+    const savedTheme = localStorage.getItem("theme") || "light";
+    if (savedTheme === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    const btnTheme = el("btn-theme");
+    if (btnTheme) {
+      btnTheme.textContent = savedTheme === "dark" ? "☀️" : "🌙";
+      btnTheme.addEventListener("click", () => {
+        const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+        const next = isDark ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        localStorage.setItem("theme", next);
+        btnTheme.textContent = next === "dark" ? "☀️" : "🌙";
+      });
+    }
     // Populate hour and minute select options
     const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
     const mins = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
@@ -1793,7 +1830,7 @@ function init() {
     el("btn-nginx-prev")?.addEventListener("click", () => { stopNginxSSE(); nginxPage--; loadNginxLogs(); });
     el("btn-nginx-next")?.addEventListener("click", () => { stopNginxSSE(); nginxPage++; loadNginxLogs(); });
     // Nginx analytics controls
-    el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseInt(e.target.value); loadNginxAnalytics(); });
+    el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseFloat(e.target.value); loadNginxAnalytics(); });
     el("btn-nginx-analytics-refresh")?.addEventListener("click", loadNginxAnalytics);
 
     // Refresh

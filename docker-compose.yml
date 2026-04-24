@@ -194,7 +194,9 @@ services:
   # ── Log Dashboard (Nginx) ──────────────────────────────────────────────────
   log-dashboard:
     #image: ${REGISTRY_IMAGE_PATH}/dashboard:latest
-    build: ./dashboard
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
     container_name: log-dashboard
     restart: unless-stopped
     networks: [ pipeline_network ]

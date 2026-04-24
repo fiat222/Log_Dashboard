@@ -11,17 +11,18 @@
     rel="stylesheet" />
   <style>
     :root {
-      --psu-blue: #1a3a6b;
-      --psu-light: #2563eb;
-      --psu-glow: rgba(37, 99, 235, 0.35);
-      --accent: #4f46e5;
-      --bg: #0a0f1e;
-      --surface: rgba(255, 255, 255, 0.04);
-      --border: rgba(255, 255, 255, 0.09);
-      --text: #f1f5f9;
-      --text-muted: #94a3b8;
-      --error: #f43f5e;
-      --success: #10b981;
+      --psu-blue: #004B93;
+      --psu-blue-dark: #003A74;
+      --psu-light-blue: #3b82f6;
+      --psu-btn-light-blue: #bae6fd;
+      --psu-btn-light-blue-hover: #7dd3fc;
+      --bg: #dbeafe;
+      --surface: rgba(255, 255, 255, 0.55);
+      --border: rgba(255, 255, 255, 0.72);
+      --text: #0f172a;
+      --text-muted: #475569;
+      --error: #dc2626;
+      --success: #059669;
     }
 
     *,
@@ -39,7 +40,7 @@
     }
 
     body {
-      background: var(--bg);
+      background: linear-gradient(135deg, #dbeafe 0%, #eff6ff 50%, #e0f2fe 100%);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -48,12 +49,12 @@
       position: relative;
     }
 
-    /* Animated background orbs */
+    /* Animated orbs */
     .bg-orb {
       position: fixed;
       border-radius: 50%;
       filter: blur(80px);
-      opacity: 0.25;
+      opacity: 0.35;
       animation: float 8s ease-in-out infinite;
       pointer-events: none;
     }
@@ -61,27 +62,27 @@
     .bg-orb-1 {
       width: 600px;
       height: 600px;
-      background: var(--psu-light);
-      top: -120px;
-      left: -120px;
+      background: var(--psu-blue);
+      top: -140px;
+      left: -140px;
       animation-delay: 0s;
     }
 
     .bg-orb-2 {
       width: 500px;
       height: 500px;
-      background: var(--accent);
+      background: var(--psu-light-blue);
       bottom: -100px;
       right: -80px;
       animation-delay: -3s;
     }
 
     .bg-orb-3 {
-      width: 600px;
-      height: 600px;
-      background: #589eff;
-      top: 40%;
-      left: 40%;
+      width: 400px;
+      height: 400px;
+      background: #93c5fd;
+      top: 45%;
+      left: 42%;
       animation-delay: -5s;
     }
 
@@ -93,28 +94,30 @@
       }
 
       50% {
-        transform: translateY(-30px) scale(1.05);
+        transform: translateY(-28px) scale(1.05);
       }
     }
 
+    /* Card — glassmorphism on light bg */
     .login-card {
       position: relative;
       z-index: 10;
-      background: rgba(255, 255, 255, 0.05);
-      backdrop-filter: blur(24px);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 48px 44px;
+      background: rgba(255, 255, 255, 0.58);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid rgba(255, 255, 255, 0.75);
+      border-radius: 24px;
       width: 100%;
-      max-width: 440px;
-      box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
+      max-width: 520px;
+      box-shadow: 0 24px 64px rgba(0, 75, 147, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
+      overflow: hidden;
       animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     @keyframes slideUp {
       from {
         opacity: 0;
-        transform: translateY(28px);
+        transform: translateY(20px);
       }
 
       to {
@@ -123,48 +126,42 @@
       }
     }
 
-    .logo-area {
+    /* PSU blue top bar */
+    .card-header {
+      background: linear-gradient(135deg, var(--psu-blue) 0%, var(--psu-blue-dark) 100%);
+      padding: 36px 52px 30px;
       text-align: center;
-      margin-bottom: 36px;
     }
 
     .logo-icon {
-      width: 64px;
-      height: 64px;
-      background: linear-gradient(135deg, var(--psu-light), var(--accent));
+      width: 72px;
+      height: 72px;
+      background: rgba(255, 255, 255, 0.15);
       border-radius: 18px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 30px;
-      margin-bottom: 16px;
-      box-shadow: 0 0 40px var(--psu-glow);
-      animation: pulse-glow 3s ease-in-out infinite;
-    }
-
-    @keyframes pulse-glow {
-
-      0%,
-      100% {
-        box-shadow: 0 0 40px var(--psu-glow);
-      }
-
-      50% {
-        box-shadow: 0 0 70px var(--psu-glow), 0 0 120px rgba(79, 70, 229, 0.2);
-      }
+      font-size: 36px;
+      margin-bottom: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
     }
 
     .logo-title {
-      font-size: 22px;
+      font-size: 24px;
       font-weight: 700;
-      color: var(--text);
+      color: #ffffff;
       letter-spacing: -0.02em;
     }
 
     .logo-subtitle {
-      font-size: 13px;
-      color: var(--text-muted);
-      margin-top: 4px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+      margin-top: 3px;
+    }
+
+    /* Card body */
+    .card-body {
+      padding: 40px 52px 48px;
     }
 
     /* SSO Button */
@@ -172,10 +169,10 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 12px;
+      gap: 10px;
       width: 100%;
-      padding: 14px 20px;
-      background: linear-gradient(135deg, var(--psu-blue), var(--psu-light));
+      padding: 15px 20px;
+      background: linear-gradient(135deg, var(--psu-blue) 0%, var(--psu-blue-dark) 100%);
       color: #fff;
       border: none;
       border-radius: 12px;
@@ -183,16 +180,16 @@
       font-size: 15px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
       text-decoration: none;
-      box-shadow: 0 4px 20px rgba(37, 99, 235, 0.4);
-      margin-bottom: 24px;
+      box-shadow: 0 4px 12px rgba(0, 75, 147, 0.25);
+      margin-bottom: 20px;
     }
 
     .btn-sso:hover {
+      background: var(--psu-blue-dark);
+      box-shadow: 0 4px 18px rgba(0, 75, 147, 0.4);
       transform: translateY(-1px);
-      box-shadow: 0 8px 30px rgba(37, 99, 235, 0.55);
-      filter: brightness(1.08);
     }
 
     .btn-sso:active {
@@ -200,15 +197,15 @@
     }
 
     .psu-icon {
-      font-size: 22px;
+      font-size: 18px;
     }
 
     /* Divider */
     .divider {
       display: flex;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 24px;
+      gap: 10px;
+      margin-bottom: 20px;
     }
 
     .divider::before,
@@ -216,12 +213,12 @@
       content: '';
       flex: 1;
       height: 1px;
-      background: var(--border);
+      background: #000;
     }
 
     .divider-text {
-      font-size: 12px;
-      color: var(--text-muted);
+      font-size: 15px;
+      color: #000;
       white-space: nowrap;
     }
 
@@ -235,27 +232,36 @@
     .form-group {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
     }
 
     .form-group label {
       font-size: 12px;
       font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
+      color: var(--text);
+      letter-spacing: 0.01em;
     }
 
     .form-input {
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid var(--border);
-      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(0, 75, 147, 0.18);
+      border-radius: 8px;
       color: var(--text);
       font-family: 'Inter', sans-serif;
-      font-size: 14px;
-      padding: 11px 14px;
+      font-size: 15px;
+      padding: 13px 16px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .form-input:focus {
+      border-color: var(--psu-blue);
+      box-shadow: 0 0 0 3px rgba(0, 75, 147, 0.12);
+      background: #fff;
+    }
+
+    .form-input::placeholder {
+      color: #b0bec5;
     }
 
     .password-wrapper {
@@ -266,7 +272,7 @@
 
     .password-wrapper input {
       width: 100%;
-      padding-right: 40px;
+      padding-right: 44px;
     }
 
     .pw-toggle {
@@ -277,51 +283,51 @@
       color: var(--text-muted);
       cursor: pointer;
       padding: 4px;
-      font-size: 14px;
+      font-size: 12px;
+      font-weight: 600;
       transition: color 0.2s;
     }
 
     .pw-toggle:hover {
-      color: #fff;
+      color: var(--psu-blue);
     }
 
-    .form-input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
-    }
-
-    .form-input::placeholder {
-      color: rgba(148, 163, 184, 0.5);
-    }
-
+    /* Light blue submit button */
     .btn-admin {
-      background: rgba(79, 70, 229, 0.15);
-      color: #a5b4fc;
-      border: 1px solid rgba(79, 70, 229, 0.3);
-      border-radius: 10px;
-      padding: 12px;
+      background: var(--psu-btn-light-blue);
+      color: #003A74;
+      border: none;
+      border-radius: 12px;
+      padding: 15px;
       font-family: 'Inter', sans-serif;
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
       margin-top: 4px;
+      box-shadow: 0 4px 12px rgba(186, 230, 253, 0.4);
     }
 
     .btn-admin:hover {
-      background: rgba(79, 70, 229, 0.25);
-      border-color: rgba(79, 70, 229, 0.5);
-      color: #c7d2fe;
+      background: var(--psu-btn-light-blue-hover);
+      box-shadow: 0 6px 16px rgba(186, 230, 253, 0.5);
+      transform: translateY(-1px);
+    }
+
+    .btn-admin:active {
+      transform: scale(0.98);
     }
 
     .btn-admin:disabled {
-      opacity: 0.5;
+      opacity: 0.6;
       cursor: not-allowed;
+      transform: none;
     }
 
+    /* Error banner */
     .error-banner {
-      background: rgba(244, 63, 94, 0.12);
-      border: 1px solid rgba(244, 63, 94, 0.3);
+      background: #fef2f2;
+      border: 1px solid #fecaca;
       border-radius: 8px;
       color: var(--error);
       font-size: 13px;
@@ -333,31 +339,16 @@
       display: block;
     }
 
-    .footer-note {
-      text-align: center;
-      margin-top: 28px;
-      font-size: 11.5px;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-
-    .footer-note a {
-      color: #818cf8;
-      text-decoration: none;
-    }
-
-    .footer-note a:hover {
-      text-decoration: underline;
-    }
-
     .spinner {
       display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-top-color: #fff;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(26, 32, 44, 0.25);
+      border-top-color: #1a202c;
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 4px;
     }
 
     @keyframes spin {
@@ -374,42 +365,45 @@
   <div class="bg-orb bg-orb-3"></div>
 
   <div class="login-card">
-    <div class="logo-area">
+    <!-- PSU Blue header -->
+    <div class="card-header">
       <div class="logo-icon">📊</div>
       <div class="logo-title">Log Dashboard</div>
       <div class="logo-subtitle">Prince of Songkla University · EILA</div>
     </div>
 
-    <!-- PSU SSO Button -->
-    <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
-      <span class="psu-icon">🎓</span>
-      Sign in with PSU Passport
-    </a>
+    <div class="card-body">
+      <!-- PSU SSO Button -->
+      <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
+        <span class="psu-icon">🎓</span>
+        Sign in with PSU Passport
+      </a>
 
-    <div class="divider">
-      <span class="divider-text">หรือเข้าสู่ระบบด้วยบัญชีผู้ใช้ (Username/Password)</span>
-    </div>
-
-    <!-- User/Admin form -->
-    <form class="admin-form" id="admin-form">
-      <div class="error-banner" id="error-msg"></div>
-      <div class="form-group">
-        <label for="username">Username</label>
-        <input id="username" class="form-input" type="text" placeholder="username" autocomplete="username" required />
+      <div class="divider">
+        <span class="divider-text">หรือเข้าสู่ระบบด้วย Admin</span>
       </div>
-      <div class="form-group">
-        <label for="password">Password</label>
-        <div class="password-wrapper">
-          <input id="password" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password"
-            required />
-          <button type="button" id="pw-toggle" class="pw-toggle" title="Show/Hide password" tabindex="-1"
-            style="font-size:12px;">show</button>
+
+      <!-- User/Admin form -->
+      <form class="admin-form" id="admin-form">
+        <div class="error-banner" id="error-msg"></div>
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input id="username" class="form-input" type="text" placeholder="username" autocomplete="username" required />
         </div>
-      </div>
-      <button type="submit" class="btn-admin" id="login-btn">
-        เข้าสู่ระบบ
-      </button>
-    </form>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <div class="password-wrapper">
+            <input id="password" class="form-input" type="password" placeholder="••••••••"
+              autocomplete="current-password" required />
+            <button type="button" id="pw-toggle" class="pw-toggle" title="Show/Hide password"
+              tabindex="-1">show</button>
+          </div>
+        </div>
+        <button type="submit" class="btn-admin" id="login-btn">
+          เข้าสู่ระบบ
+        </button>
+      </form>
+    </div>
   </div>
 
   <script>

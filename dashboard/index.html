@@ -28,7 +28,6 @@
           </div>
           <button id="btn-logout" class="btn-logout" title="Logout" style="display:none;">logout</button>
         </div>
-
         <!-- User info pill -->
         <div id="user-pill" class="user-pill" style="display:none;">
           <span id="user-role-badge" class="role-badge"></span>
@@ -93,7 +92,10 @@
           <button id="tab-nginx" class="tab-btn hidden" title="Nginx Logs">🌐 Nginx</button>
         </div>
 
-        <div class="metric-card" id="m-total" style="margin-left: auto;">
+        <div style="flex:1;"></div><!-- spacer -->
+        <button id="btn-docs-mini" class="btn-icon-circle hidden" title="User Manual">📖</button>
+
+        <div class="metric-card" id="m-total">
           <span class="metric-value">—</span>
           <span class="metric-label">Total Logs</span>
         </div>
@@ -109,6 +111,9 @@
           <span class="metric-value">—</span>
           <span class="metric-label">Active Containers</span>
         </div>
+
+        <!-- Theme toggle -->
+        <button id="btn-theme" class="btn-icon-circle" title="Toggle dark/light mode" aria-label="Toggle theme">🌙</button>
 
         <!-- Notification Bell -->
         <div class="notif-bell-wrapper" id="notif-wrapper">
@@ -309,6 +314,8 @@
           <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
             <span style="font-size:13px; font-weight:600; color:var(--text-dim);">Analytics</span>
             <select id="nginx-hours-select" style="font-size:12px; padding:2px 6px;">
+              <option value="0.0833">Last 5 min</option>
+              <option value="0.5">Last 30 min</option>
               <option value="1">Last 1 h</option>
               <option value="6">Last 6 h</option>
               <option value="24" selected>Last 24 h</option>
@@ -483,6 +490,14 @@
         <button id="btn-modal-confirm" class="btn-danger">Confirm Delete</button>
       </div>
     </div>
+
+  </div>
+
+  <!-- Docs FAB — outside #app, body overflow:clip allows fixed to escape -->
+  <div class="docs-fab-wrapper" id="docs-fab-wrapper">
+    <span class="docs-fab-tooltip">User Manual</span>
+    <a id="docs-link" href="#" target="_blank" class="docs-fab" aria-label="User Manual">📖</a>
+    <button id="btn-docs-close" class="docs-fab-close" title="Close">×</button>
   </div>
 
   <!-- ── Export Panel ───────────────────────────────────────────────── -->

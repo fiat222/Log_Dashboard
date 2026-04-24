@@ -33,6 +33,18 @@
   --sans: 'Inter', sans-serif;
 }
 
+[data-theme="dark"] {
+  --bg-base: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-elevated: #334155;
+  --bg-glass: rgba(30, 41, 59, 0.8);
+  --bg-input: #1e293b;
+  --border: #334155;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #cbd5e1;
+}
+
 *,
 *::before,
 *::after {
@@ -50,8 +62,108 @@ body {
   background: var(--bg-base);
   color: var(--text);
   min-height: 100vh;
-  overflow: hidden;
+  overflow: clip;
   letter-spacing: -0.01em;
+  transition: background 0.2s, color 0.2s;
+}
+
+/* ── Docs FAB (floating bottom-right) ── */
+.docs-fab-wrapper {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.docs-fab-wrapper.hidden {
+  display: none;
+}
+
+.docs-fab-close {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #64748b;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 1;
+}
+
+.docs-fab-wrapper:hover .docs-fab-close {
+  opacity: 1;
+}
+
+.docs-fab-close:hover {
+  background: #e11d48;
+}
+
+.docs-fab-tooltip {
+  background: rgba(15, 23, 42, 0.88);
+  color: #f1f5f9;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.docs-fab-wrapper:hover .docs-fab-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.docs-fab {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #004B93;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  text-decoration: none;
+  box-shadow: 0 4px 16px rgba(0, 75, 147, 0.35);
+  transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+}
+
+.docs-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 24px rgba(0, 75, 147, 0.5);
+  background: #003A74;
+}
+
+[data-theme="dark"] .docs-fab {
+  background: #FDB913;
+  box-shadow: 0 4px 16px rgba(253, 185, 19, 0.3);
+}
+
+[data-theme="dark"] .docs-fab:hover {
+  background: #e0a410;
+  box-shadow: 0 6px 24px rgba(253, 185, 19, 0.45);
+}
+
+[data-theme="dark"] .docs-fab-tooltip {
+  background: rgba(241, 245, 249, 0.12);
+  backdrop-filter: blur(8px);
 }
 
 /* ── Scrollbar ── */

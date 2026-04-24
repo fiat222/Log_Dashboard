@@ -79,6 +79,13 @@ server {
         }
     }
 
+    # Docusaurus docs (static build)
+    location /logstore/docs/ {
+        alias /usr/share/nginx/html/docs/;
+        index index.html;
+        try_files $uri $uri/ $uri.html /logstore/docs/index.html;
+    }
+
     # Static dashboard files & Assets
     location /logstore/ {
         alias   /usr/share/nginx/html/;

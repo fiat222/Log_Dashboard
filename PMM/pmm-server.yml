@@ -1,0 +1,26 @@
+services:
+  pmm-server:
+    # Pinned version — อย่าใช้ latest เพื่อ stability
+    image: percona/pmm-server:2.43.0
+    container_name: pmm-server
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PMM_RETENTION=15d          # เก็บ Metrics ไว้ 15 วัน
+    volumes:
+      - pmm-data:/srv
+      # !! ต้อง extract grafana.ini ออกมาก่อน docker compose up !!
+      # ดูขั้นตอนใน instruction.txt (Phase 1: Step 1)
+      - ./grafana.ini:/etc/grafana/grafana.ini:ro
+    shm_size: 1g                   # ต้องการ RAM >= 8 GB บน host
+    networks:
+      - pmm-net
+
+networks:
+  pmm-net:
+    driver: bridge
+
+volumes:
+  pmm-data:

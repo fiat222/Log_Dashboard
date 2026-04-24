@@ -1,0 +1,19 @@
+services:
+  pmm-client:
+    image: percona/pmm-client:2.43.0
+    container_name: pmm-client
+    restart: always
+    network_mode: host             # จำเป็นเพื่อให้ monitor host metrics ได้
+    privileged: true               # จำเป็นสำหรับ node metrics
+    environment:
+      # PMM Server connection (ดึงจาก .env file)
+      - PMM_AGENT_SERVER_ADDRESS=${PMM_AGENT_SERVER_ADDRESS}
+      - PMM_AGENT_SERVER_USERNAME=${PMM_AGENT_SERVER_USERNAME}
+      - PMM_AGENT_SERVER_PASSWORD=${PMM_AGENT_SERVER_PASSWORD}
+      - PMM_AGENT_SERVER_INSECURE_TLS=1   # สำหรับ self-signed cert
+      - PMM_AGENT_SETUP=1                 # auto-register agent กับ server
+    volumes:
+      - pmm-agent-data:/srv/pmm-agent
+
+volumes:
+  pmm-agent-data:

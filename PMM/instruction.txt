@@ -1,0 +1,240 @@
+=========================================================
+ PMM Setup Guide — Log Dashboard Project
+ อ้างอิง: PMM-Setup-Guide.docx
+=========================================================
+
+ไฟล์นี้แบ่งเป็น 2 ส่วน:
+  [SERVER]  → ทำครั้งเดียวบน VM กลาง (PMM Server)
+  [CLIENT]  → ทำซ้ำบนทุก VM ที่ต้องการ monitor
+
+=========================================================
+[SERVER] Phase 1 — เตรียม PMM Server
+=========================================================
+
+Step 1: Extract grafana.ini (ต้องทำก่อน docker compose up !)
+-----------------------------------------------------------------
+# รัน container ชั่วคราวเพื่อดึงไฟล์ออกมา
+docker run --rm -d --name pmm-temp percona/pmm-server:2.43.0
+
+# รอ ~10 วินาที แล้วค่อย copy
+docker cp pmm-temp:/etc/grafana/grafana.ini ./grafana.ini
+
+# หยุด container ชั่วคราว
+docker stop pmm-temp
+
+
+Step 2: แก้ไข grafana.ini
+-----------------------------------------------------------------
+nano ./grafana.ini
+
+# ค้นหา [auth.generic_oauth] แล้วตั้งค่า SSO:
+[auth.generic_oauth]
+enabled = true
+name = PSU OAuth
+allow_sign_up = true
+client_id = YOUR_CLIENT_ID_HERE
+client_secret = YOUR_CLIENT_SECRET_HERE
+auth_url = https://eila.psu.ac.th/authen/o/authorize/
+token_url = https://eila.psu.ac.th/authen/o/token/
+
+# ตั้งค่า iFrame embedding:
+[security]
+allow_embedding = true
+
+[cookie]
+cookie_samesite = lax
+
+
+Step 3: รัน PMM Server
+-----------------------------------------------------------------
+docker compose -f pmm-server.yml up -d
+
+# ตรวจสอบ
+docker logs -f pmm-server
+
+# เข้าใช้งาน: https://<PMM_SERVER_IP>
+# Default login: admin / admin  (เปลี่ยนทันทีหลัง login ครั้งแรก!)
+
+
+Step 4: ตั้งค่า RBAC (จำกัดสิทธิ์ user ผ่าน SSO)
+-----------------------------------------------------------------
+1. เข้า Settings (รูปฟันเฟือง) >> Organization >> User Roles
+2. เลือก User/Group ที่ต้องการจำกัด
+3. หา "Dashboards: Restrict access to specific folders or dashboards"
+4. เลือกเฉพาะ Dashboard ที่ต้องการ เช่น:
+   - PostgreSQL Overview
+   - MySQL Overview
+   - Node Summary
+   - Linux System
+   - Nginx / Redis / PHP-FPM
+
+
+=========================================================
+[CLIENT] Phase 2 — เตรียม Database บน DB VM (Prerequisites)
+=========================================================
+
+=== ถ้า VM มี PostgreSQL ===
+-----------------------------------------------------------------
+# Step 1: เปิดใช้ pg_stat_statements (ใน postgresql.conf)
+echo "shared_preload_libraries = 'pg_stat_statements'" >> /etc/postgresql/*/main/postgresql.conf
+echo "pg_stat_statements.track = all" >> /etc/postgresql/*/main/postgresql.conf
+systemctl restart postgresql
+
+# Step 2: สร้าง PMM User
+sudo -u postgres psql <<'EOF'
+CREATE USER pmm WITH PASSWORD 'StrongPassword123!';
+GRANT pg_monitor TO pmm;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+EOF
+
+
+=== ถ้า VM มี MySQL/MariaDB ===
+-----------------------------------------------------------------
+# Step 1: เปิด slow query log และ performance_schema
+# เพิ่มใน /etc/mysql/mysql.conf.d/mysqld.cnf :
+slow_query_log = 1
+long_query_time = 1
+log_slow_verbosity = full
+performance_schema = ON
+
+systemctl restart mysql
+
+# Step 2: สร้าง PMM User
+sudo mysql -u root <<'EOF'
+CREATE USER 'pmm'@'localhost' IDENTIFIED BY 'StrongPassword123!';
+GRANT SELECT, PROCESS, REPLICATION CLIENT ON *.* TO 'pmm'@'localhost';
+GRANT SELECT ON performance_schema.* TO 'pmm'@'localhost';
+GRANT SELECT ON sys.* TO 'pmm'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+
+=========================================================
+[CLIENT] Phase 3 — Deploy PMM Client บน DB VM
+=========================================================
+
+Step 1: Copy ไฟล์ที่จำเป็นไปที่ DB VM
+-----------------------------------------------------------------
+# โฟลเดอร์นี้ (PMM/) ทั้งหมดให้ scp ไปยัง VM:
+scp -r ./PMM/ user@<DB_VM_IP>:~/pmm/
+
+
+Step 2: แก้ไข .env file ให้ตรงกับ VM นั้น
+-----------------------------------------------------------------
+cd ~/pmm
+
+# สำหรับ PostgreSQL VM:
+nano client-postgres.env
+  → เปลี่ยน PMM_AGENT_SERVER_ADDRESS, PMM_AGENT_SERVER_PASSWORD
+  → เปลี่ยน DB_PASS, SERVICE_NAME (ต้อง unique เช่น db-web1-postgresql)
+
+# สำหรับ MySQL VM:
+nano client-mysql.env
+  → เปลี่ยนเหมือนกัน
+
+
+Step 3: รัน PMM Client
+-----------------------------------------------------------------
+# PostgreSQL VM:
+docker compose --env-file client-postgres.env -f pmm-client.yml up -d
+
+# MySQL VM:
+docker compose --env-file client-mysql.env -f pmm-client.yml up -d
+
+# ตรวจสอบ agent connect ได้
+docker exec pmm-client pmm-admin status
+
+
+Step 4: ลงทะเบียน Database กับ PMM Server
+-----------------------------------------------------------------
+# ดูค่าจาก .env file ก่อน แล้วใส่ใน command ด้านล่าง
+
+# === PostgreSQL ===
+docker exec pmm-client pmm-admin add postgresql \
+  --username=pmm \
+  --password='StrongPassword123!' \
+  --host=localhost \
+  --port=5432 \
+  --service-name=<HOSTNAME>-postgresql \
+  --query-source=pgstatements \
+  --environment=production \
+  --cluster=pg-cluster-01 \
+  --replication-set=pgsql-main
+
+# === MySQL ===
+docker exec pmm-client pmm-admin add mysql \
+  --username=pmm \
+  --password='StrongPassword123!' \
+  --host=localhost \
+  --port=3306 \
+  --service-name=<HOSTNAME>-mysql \
+  --query-source=slowlog \
+  --environment=production \
+  --cluster=mysql-cluster-01
+
+# ตรวจสอบ
+docker exec pmm-client pmm-admin list
+# ผลที่ถูกต้อง: postgresql/mysql ... Running
+
+
+Step 5: ตรวจสอบบน PMM UI
+-----------------------------------------------------------------
+# รอ 2-3 นาที แล้วเปิด browser:
+https://<PMM_SERVER_IP>
+
+# ไปที่:
+- PMM > Query Analytics (QAN) → ดู Query จาก DB
+- Dashboard > MySQL Overview / PostgreSQL Overview
+- Dashboard > Node Summary → ดู CPU/RAM/Disk ของ VM
+
+
+=========================================================
+[OPTIONAL] Phase 4 — iFrame Integration กับ Grafana หลัก
+=========================================================
+
+URL สำหรับ embed:
+-----------------------------------------------------------------
+Query Analytics   : https://<PMM_IP>/graph/d/pmm-qan/query-analytics
+MySQL Overview    : https://<PMM_IP>/graph/d/mysql-instance-overview
+PostgreSQL Overview: https://<PMM_IP>/graph/d/postgresql-instance-overview
+Node Summary      : https://<PMM_IP>/graph/d/node-instance-overview
+
+Query Parameters:
+  ?var-service_name=<HOSTNAME>-postgresql   # เลือก DB instance
+  &kiosk=1                                  # ซ่อน Header/Navbar
+
+ตัวอย่างเต็ม:
+  https://<PMM_IP>/graph/d/pmm-qan/query-analytics?orgId=1&var-service_name=db-app1-postgresql&kiosk=1
+
+HTML iFrame:
+  <iframe
+    src="https://<PMM_IP>/graph/d/pmm-qan/query-analytics?orgId=1&kiosk=1"
+    width="100%" height="600" frameborder="0" style="border:none;">
+  </iframe>
+
+!! ถ้า iFrame แสดง Blank → ตรวจสอบ allow_embedding = true ใน grafana.ini
+
+
+=========================================================
+Useful Commands — Day-to-Day
+=========================================================
+
+docker exec pmm-client pmm-admin list                  # ดู services ทั้งหมด
+docker exec pmm-client pmm-admin status                # ดู agent status
+docker exec pmm-client pmm-admin remove <service-name> # ลบ service
+docker compose -f pmm-server.yml restart               # restart server
+docker compose -f pmm-server.yml logs -f pmm-server    # ดู server logs
+docker system df                                        # ดู disk usage
+
+
+=========================================================
+Troubleshooting
+=========================================================
+
+ปัญหา                    | สาเหตุ                        | วิธีแก้
+-------------------------|-------------------------------|----------------------------------
+iFrame แสดง Blank        | allow_embedding = false       | ตรวจ grafana.ini ใน container
+Client เชื่อม Server ไม่ได้| Firewall/Proxy block Port 443 | เพิ่ม NO_PROXY=<PMM_SERVER_IP>
+QAN ไม่แสดง Query        | Slow log/pg_stat_statements   | รอ 5 นาที หรือตรวจ DB config
+SSO Loop Redirect        | Redirect URI ผิด              | ตรวจ Redirect URI ใน authentik
+Container Crash Loop     | RAM ไม่พอ (ต้องการ >= 8 GB)   | ลด PMM_RETENTION หรือเพิ่ม RAM

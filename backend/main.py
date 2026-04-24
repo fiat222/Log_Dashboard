@@ -1884,7 +1884,7 @@ async def nginx_logs_setup(user=Depends(require_role("super_admin", "admin"))):
 
 @app.get("/api/admin/nginx-logs/overview")
 async def nginx_overview(
-    hours: int = Query(default=24, ge=1, le=168),
+    hours: float = Query(default=24, ge=0.05, le=168),
     user=Depends(require_role("super_admin", "admin")),
 ):
     await ensure_nginx_tables()
@@ -1901,7 +1901,7 @@ async def nginx_overview(
                quantile(0.95)(request_time) AS p95_time,
                sum(bytes_sent)            AS total_bytes
         FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
+        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -1929,7 +1929,7 @@ async def nginx_overview(
 
 @app.get("/api/admin/nginx-logs/traffic")
 async def nginx_traffic(
-    hours: int = Query(default=6, ge=1, le=48),
+    hours: float = Query(default=6, ge=0.05, le=48),
     user=Depends(require_role("super_admin", "admin")),
 ):
     await ensure_nginx_tables()
@@ -1942,7 +1942,7 @@ async def nginx_traffic(
     query = f"""
         SELECT minute, status, sum(count) AS count
         FROM logs.nginx_status_mv_target
-        WHERE minute >= now() - INTERVAL {int(hours)} HOUR
+        WHERE minute >= now() - INTERVAL {int(hours * 60)} MINUTE
         GROUP BY minute, status
         ORDER BY minute ASC
         FORMAT JSON
@@ -1965,7 +1965,7 @@ async def nginx_traffic(
 
 @app.get("/api/admin/nginx-logs/top-paths")
 async def nginx_top_paths(
-    hours: int = Query(default=24, ge=1, le=168),
+    hours: float = Query(default=24, ge=0.05, le=168),
     limit: int = Query(default=20, ge=1, le=100),
     user=Depends(require_role("super_admin", "admin")),
 ):
@@ -1980,7 +1980,7 @@ async def nginx_top_paths(
         SELECT referer, path, count() AS total,
                countIf(status >= 400) AS errors
         FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
+        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         GROUP BY referer, path ORDER BY total DESC
         LIMIT {int(limit)}
         FORMAT JSON
@@ -2003,7 +2003,7 @@ async def nginx_top_paths(
 
 @app.get("/api/admin/nginx-logs/top-ips")
 async def nginx_top_ips(
-    hours: int = Query(default=24, ge=1, le=168),
+    hours: float = Query(default=24, ge=0.05, le=168),
     limit: int = Query(default=20, ge=1, le=100),
     user=Depends(require_role("super_admin", "admin")),
 ):
@@ -2020,7 +2020,7 @@ async def nginx_top_ips(
                avg(request_time) AS avg_time,
                max(timestamp) AS last_seen
         FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours)} HOUR
+        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         GROUP BY remote_addr ORDER BY total DESC
         LIMIT {int(limit)}
         FORMAT JSON
@@ -2080,7 +2080,7 @@ async def nginx_hourly(
 
 @app.get("/api/admin/nginx-logs/logs")
 async def nginx_logs_query(
-    hours: int              = Query(default=24, ge=1, le=168),
+    hours: float            = Query(default=24, ge=0.05, le=168),
     status_code: Optional[int]   = Query(default=None, alias="status"),
     method: Optional[str]        = Query(default=None),
     path_contains: Optional[str] = Query(default=None),
@@ -2095,7 +2095,7 @@ async def nginx_logs_query(
 ):
     await ensure_nginx_tables()
 
-    conditions = [f"timestamp >= now() - INTERVAL {int(hours)} HOUR"]
+    conditions = [f"timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE"]
     if status_code is not None:
         conditions.append(f"status = {int(status_code)}")
     if method:

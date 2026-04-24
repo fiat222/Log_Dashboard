@@ -184,6 +184,7 @@
                   🚀 Start Backup
                 </button>
               </div>
+              <div id="backup-status-banner" class="hidden backup-banner"></div>
               <p style="font-size: 11px; color: var(--text-dim);">
                 * This will trigger PostgreSQL and ClickHouse backups immediately.
               </p>
@@ -341,11 +342,10 @@
             <h3>Top Paths</h3>
             <table style="width:100%; border-collapse:collapse; font-size:12px;">
               <thead><tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left; padding:4px 8px; color:var(--text-muted); font-weight:600;">Website</th>
                 <th style="text-align:left; padding:4px 8px; color:var(--text-muted); font-weight:600;">Path</th>
                 <th style="text-align:right; padding:4px 8px; color:var(--text-muted); font-weight:600;">Requests</th>
                 <th style="text-align:right; padding:4px 8px; color:var(--text-muted); font-weight:600;">Errors</th>
-                <th style="text-align:right; padding:4px 8px; color:var(--text-muted); font-weight:600;">Avg Time</th>
-                <th style="text-align:right; padding:4px 8px; color:var(--text-muted); font-weight:600;">P95 Time</th>
               </tr></thead>
               <tbody id="nginx-top-paths-body"><tr><td colspan="5" style="padding:8px; color:var(--text-muted);">Loading…</td></tr></tbody>
             </table>

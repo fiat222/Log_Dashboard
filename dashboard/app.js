@@ -908,11 +908,10 @@ async function loadNginxTopPaths() {
     tbody.innerHTML = rows.map(r => {
       const errs = parseInt(r.errors || 0);
       return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:4px 8px; color:var(--text-muted);">${escHtml(String(r.referer || "-"))}</td>
         <td style="padding:4px 8px; font-family:monospace; word-break:break-all; max-width:400px;">${escHtml(String(r.path || ""))}</td>
         <td style="padding:4px 8px; text-align:right;">${fmt(parseInt(r.total || 0))}</td>
         <td style="padding:4px 8px; text-align:right; color:${errs > 0 ? "var(--error)" : "inherit"}">${fmt(errs)}</td>
-        <td style="padding:4px 8px; text-align:right;">${Math.round(parseFloat(r.avg_time || 0) * 1000)} ms</td>
-        <td style="padding:4px 8px; text-align:right;">${Math.round(parseFloat(r.p95_time || 0) * 1000)} ms</td>
       </tr>`;
     }).join("");
   } catch (e) { console.error("nginx top paths:", e); }
@@ -1813,8 +1812,16 @@ function init() {
       backupBtn.addEventListener("click", async () => {
         if (!confirm("คุณต้องการเริ่มกระบวนการ Backup ทันทีหรือไม่?\n(PostgreSQL + ClickHouse)")) return;
 
+        const clearBtn = el("btn-clear-db");
+        const banner = el("backup-status-banner");
+
         backupBtn.disabled = true;
         backupBtn.textContent = "⏳ Processing...";
+        if (clearBtn) clearBtn.disabled = true;
+        if (banner) {
+          banner.className = "backup-banner in-progress";
+          banner.textContent = "⏳ Backup in process... Please wait.";
+        }
 
         try {
           const res = await fetch(`${API_BASE}/admin/backup/trigger`, {
@@ -1822,13 +1829,33 @@ function init() {
             credentials: "include"
           });
           if (res.ok) {
-            alert("🚀 Backup started!\nระบบกำลังทำงานในพื้นหลัง (Background)\nไฟล์จะถูกเก็บไว้ใน /mnt");
+            if (banner) {
+              banner.className = "backup-banner success";
+              banner.textContent = "✅ Backup completed successfully! Files saved to /mnt.";
+              setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
+            }
+            addNotification({
+              id: `backup-${Date.now()}`,
+              type: "info",
+              message: "✅ Backup completed successfully (PostgreSQL + ClickHouse)",
+              timestamp: new Date().toISOString()
+            });
+            if (clearBtn) clearBtn.disabled = false;
           } else {
             const data = await res.json().catch(() => ({}));
-            alert(`❌ Backup failed: ${data.detail || "Unknown error"}`);
+            if (banner) {
+              banner.className = "backup-banner error";
+              banner.textContent = `❌ Backup failed: ${data.detail || "Unknown error"}`;
+              setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
+            }
           }
         } catch (err) {
-          alert(`❌ Error connecting to server: ${err.message}`);
+          if (banner) {
+            banner.className = "backup-banner error";
+            banner.textContent = `❌ Error connecting to server: ${err.message}`;
+            setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
+          }
+          if (clearBtn) clearBtn.disabled = false;
         } finally {
           backupBtn.disabled = false;
           backupBtn.textContent = "🚀 Start Backup";

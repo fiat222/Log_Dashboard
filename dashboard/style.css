@@ -825,6 +825,30 @@ body {
 /* ── Buttons ──────────────────────────────────────────────── */
 .btn-primary,
 .btn-secondary,
+/* ── Backup Status Banner ─────────────────────────────────── */
+.backup-banner {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+}
+.backup-banner.in-progress {
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
+.backup-banner.success {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #22c55e;
+}
+.backup-banner.error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+
 .btn-danger,
 .btn-ghost {
   display: inline-flex;

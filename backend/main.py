@@ -630,6 +630,67 @@ async def check_and_assign_containers():
     except Exception as e:
         log.warning("check_and_assign_containers error: %s", e)
 
+async def auto_backup_and_purge():
+    """Daily job: Backup PostgreSQL/ClickHouse, then purge old logs based on settings."""
+    try:
+        # 1. Get TTL from settings
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("SELECT value FROM settings WHERE key = 'ttl_days'"))
+            ttl_val = res.scalar()
+            ttl_days = int(ttl_val) if ttl_val else 90
+        
+        log.info("Starting scheduled Auto Backup & Purge (TTL: %d days)...", ttl_days)
+        
+        # 2. Run backup.sh in the backup container
+        # Note: Script is at /usr/local/bin/backup.sh inside the container
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", "backup", "bash", "/usr/local/bin/backup.sh",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode != 0:
+            err_msg = stderr.decode().strip()
+            log.error("Scheduled Backup FAILED: %s", err_msg)
+            # Notify admins via internal notification system
+            async with AsyncSessionLocal() as db:
+                await db.execute(text(
+                    "INSERT INTO notifications (type, severity, title, message) "
+                    "VALUES ('backup_fail', 'critical', :title, :msg)"
+                ), {"title": "🚨 Scheduled Backup Failed", "msg": f"Backup script exited with code {proc.returncode}. Error: {err_msg[:200]}"})
+                await db.commit()
+            return
+
+        log.info("Backup completed successfully. Proceeding to purge logs older than %d days.", ttl_days)
+        
+        # 3. Purge ClickHouse logs older than TTL (Heavyweight Mutation)
+        sql = f"ALTER TABLE logs.container_logs DELETE WHERE timestamp < now() - INTERVAL {ttl_days} DAY SETTINGS mutations_sync = 0"
+        url = f"http://{CH_HOST}:{CH_PORT}/"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=sql,
+                                    params={"database": CH_DB},
+                                    headers={"X-ClickHouse-User": CH_USER,
+                                             "X-ClickHouse-Key": CH_PASS},
+                                    timeout=60) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.error("Scheduled Purge FAILED: %s", body)
+                else:
+                    log.info("Scheduled Purge mutation started.")
+                    
+        # 4. Notify success in Dashboard
+        async with AsyncSessionLocal() as db:
+            await db.execute(text(
+                "INSERT INTO notifications (type, severity, title, message) "
+                "VALUES ('backup_success', 'info', :title, :msg)"
+            ), {"title": "✅ Auto Backup & Purge Done", "msg": f"Successfully backed up and purged logs older than {ttl_days} days."})
+            await db.commit()
+
+    except Exception as e:
+        log.exception("auto_backup_and_purge error: %s", e)
+
+
 # ── Global State for Circuit Breaker & Caching ────────────────────────────────
 class CircuitBreaker:
     def __init__(self, failure_threshold=3, recover_time=30):
@@ -681,6 +742,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_container_downtime, "interval", seconds=60, id="downtime_checker")
     # แม็พ Container จาก Registry เข้ากับ SSO Users แบบอัตโนมัติ
     scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
+    # Auto Backup & Purge: ทุกวันเวลา 03:00 น.
+    scheduler.add_job(auto_backup_and_purge, "cron", hour=3, minute=0, id="auto_backup_purge")
 
     scheduler.start()
     log.info("Scheduler started — checking logs and container health")

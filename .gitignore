@@ -63,3 +63,8 @@ context.md
 .antigravity/
 FileBeat/
 restore_backup/
+PMM/grafana.ini
+.claude/
+
+# Internship Project related
+Miniproject/

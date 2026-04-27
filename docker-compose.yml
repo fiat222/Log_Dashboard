@@ -19,7 +19,6 @@ volumes:
   postgres_data:
   backup_data:
 
-
 services:
 
   # ── Traefik ────────────────────────────────────────────────────────────────

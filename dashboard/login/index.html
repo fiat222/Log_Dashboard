@@ -1,429 +1,484 @@
 <!DOCTYPE html>
 <html lang="th">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Log Dashboard — PSU Login</title>
-  <meta name="description" content="Sign in to PSU Container Log Dashboard" />
+  <title>Log Dashboard — Sign In</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
-    rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     :root {
       --psu-blue: #004B93;
-      --psu-blue-dark: #003A74;
-      --psu-light-blue: #3b82f6;
-      --psu-btn-light-blue: #bae6fd;
-      --psu-btn-light-blue-hover: #7dd3fc;
-      --bg: #dbeafe;
-      --surface: rgba(255, 255, 255, 0.55);
-      --border: rgba(255, 255, 255, 0.72);
-      --text: #0f172a;
-      --text-muted: #475569;
-      --error: #dc2626;
-      --success: #059669;
+      --psu-blue-mid: #1a5fa8;
+      --accent: #004B93;
+      --bg: #f5f6f8;
+      --surface: #ffffff;
+      --border: #e2e6ea;
+      --border-focus: #004B93;
+      --text: #0d1117;
+      --text-muted: #6b7280;
+      --text-dim: #374151;
+      --error: #c0392b;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'Inter', sans-serif;
     }
 
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    html,
-    body {
-      height: 100%;
-      font-family: 'Inter', sans-serif;
-    }
+    html, body { height: 100%; font-family: var(--sans); }
 
     body {
-      background: linear-gradient(135deg, #dbeafe 0%, #eff6ff 50%, #e0f2fe 100%);
+      background: #dde4ef;
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      overflow: hidden;
       position: relative;
+      overflow: hidden;
     }
 
-    /* Animated orbs */
-    .bg-orb {
+    /* Dot grid */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(circle, rgba(0,75,147,0.15) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Animated blobs */
+    .blob {
       position: fixed;
       border-radius: 50%;
-      filter: blur(80px);
-      opacity: 0.35;
-      animation: float 8s ease-in-out infinite;
+      filter: blur(70px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .blob-1 {
+      width: 500px;
+      height: 500px;
+      background: rgba(0, 75, 147, 0.22);
+      top: -100px;
+      left: -120px;
+      animation: blobMove1 14s ease-in-out infinite alternate;
+    }
+
+    .blob-2 {
+      width: 420px;
+      height: 420px;
+      background: rgba(14, 100, 190, 0.18);
+      bottom: -80px;
+      right: -100px;
+      animation: blobMove2 17s ease-in-out infinite alternate;
+    }
+
+    .blob-3 {
+      width: 300px;
+      height: 300px;
+      background: rgba(0, 140, 220, 0.13);
+      top: 50%;
+      left: 55%;
+      animation: blobMove3 20s ease-in-out infinite alternate;
+    }
+
+    @keyframes blobMove1 {
+      0%   { transform: translate(0px,   0px)  scale(1);    }
+      50%  { transform: translate(60px,  40px) scale(1.08); }
+      100% { transform: translate(20px,  80px) scale(0.95); }
+    }
+
+    @keyframes blobMove2 {
+      0%   { transform: translate(0px,   0px)   scale(1);    }
+      50%  { transform: translate(-50px, -30px) scale(1.1);  }
+      100% { transform: translate(-20px, -70px) scale(0.92); }
+    }
+
+    @keyframes blobMove3 {
+      0%   { transform: translate(0px,  0px)  scale(1);    }
+      50%  { transform: translate(-40px, 30px) scale(1.15); }
+      100% { transform: translate(30px, -40px) scale(0.9);  }
+    }
+
+    .login-card { position: relative; z-index: 1; }
+
+    /* ── Card ───────────────────────────── */
+    .login-card {
+      width: 100%;
+      max-width: 400px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.07), 0 1px 4px rgba(0,0,0,0.04);
+      overflow: hidden;
+      animation: fadeUp 0.3s ease both;
+    }
+
+    /* Card top bar */
+    .card-top {
+      background: var(--psu-blue);
+      padding: 24px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-top::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+      background-size: 28px 28px;
       pointer-events: none;
     }
 
-    .bg-orb-1 {
-      width: 600px;
-      height: 600px;
-      background: var(--psu-blue);
-      top: -140px;
-      left: -140px;
-      animation-delay: 0s;
-    }
-
-    .bg-orb-2 {
-      width: 500px;
-      height: 500px;
-      background: var(--psu-light-blue);
-      bottom: -100px;
-      right: -80px;
-      animation-delay: -3s;
-    }
-
-    .bg-orb-3 {
-      width: 400px;
-      height: 400px;
-      background: #93c5fd;
-      top: 45%;
-      left: 42%;
-      animation-delay: -5s;
-    }
-
-    @keyframes float {
-
-      0%,
-      100% {
-        transform: translateY(0) scale(1);
-      }
-
-      50% {
-        transform: translateY(-28px) scale(1.05);
-      }
-    }
-
-    /* Card — glassmorphism on light bg */
-    .login-card {
-      position: relative;
-      z-index: 10;
-      background: rgba(255, 255, 255, 0.58);
-      backdrop-filter: blur(28px);
-      -webkit-backdrop-filter: blur(28px);
-      border: 1px solid rgba(255, 255, 255, 0.75);
-      border-radius: 24px;
-      width: 100%;
-      max-width: 520px;
-      box-shadow: 0 24px 64px rgba(0, 75, 147, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
-      overflow: hidden;
-      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    @keyframes slideUp {
-      from {
-        opacity: 0;
-        transform: translateY(20px);
-      }
-
-      to {
-        opacity: 1;
-        transform: none;
-      }
-    }
-
-    /* PSU blue top bar */
-    .card-header {
-      background: linear-gradient(135deg, var(--psu-blue) 0%, var(--psu-blue-dark) 100%);
-      padding: 36px 52px 30px;
-      text-align: center;
-    }
-
-    .logo-icon {
-      width: 72px;
-      height: 72px;
-      background: rgba(255, 255, 255, 0.15);
-      border-radius: 18px;
-      display: inline-flex;
+    .brand-icon {
+      width: 34px;
+      height: 34px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 7px;
+      display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 36px;
-      margin-bottom: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
     }
 
-    .logo-title {
-      font-size: 24px;
-      font-weight: 700;
-      color: #ffffff;
-      letter-spacing: -0.02em;
+    .brand-icon svg { width: 16px; height: 16px; }
+
+    .brand-text { position: relative; z-index: 1; }
+
+    .brand-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
     }
 
-    .logo-subtitle {
-      font-size: 12px;
-      color: rgba(255, 255, 255, 0.7);
-      margin-top: 3px;
+    .brand-sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: rgba(255,255,255,0.45);
+      letter-spacing: 0.04em;
+      margin-top: 2px;
     }
 
     /* Card body */
     .card-body {
-      padding: 40px 52px 48px;
+      padding: 28px 32px 32px;
     }
 
-    /* SSO Button */
+    .login-form-wrap {
+      width: 100%;
+    }
+
+    .form-heading {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      margin-bottom: 4px;
+    }
+
+    .form-subheading {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+
+    /* SSO button */
     .btn-sso {
       display: flex;
       align-items: center;
-      justify-content: center;
       gap: 10px;
       width: 100%;
-      padding: 15px 20px;
-      background: linear-gradient(135deg, var(--psu-blue) 0%, var(--psu-blue-dark) 100%);
+      padding: 10px 16px;
+      background: var(--psu-blue);
       color: #fff;
       border: none;
-      border-radius: 12px;
-      font-family: 'Inter', sans-serif;
-      font-size: 15px;
-      font-weight: 600;
+      border-radius: 6px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
-      transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
       text-decoration: none;
-      box-shadow: 0 4px 12px rgba(0, 75, 147, 0.25);
+      transition: background 0.15s, box-shadow 0.15s;
       margin-bottom: 20px;
+      letter-spacing: -0.01em;
     }
 
     .btn-sso:hover {
-      background: var(--psu-blue-dark);
-      box-shadow: 0 4px 18px rgba(0, 75, 147, 0.4);
-      transform: translateY(-1px);
+      background: var(--psu-blue-mid);
+      box-shadow: 0 2px 8px rgba(0,75,147,0.25);
     }
 
-    .btn-sso:active {
-      transform: scale(0.98);
+    .btn-sso:active { opacity: 0.9; }
+
+    .sso-icon {
+      width: 20px;
+      height: 20px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
 
-    .psu-icon {
-      font-size: 18px;
+    .sso-icon svg { width: 12px; height: 12px; }
+
+    .btn-sso-label { flex: 1; }
+
+    .btn-sso-arrow {
+      opacity: 0.5;
+      font-size: 14px;
     }
 
     /* Divider */
     .divider {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       margin-bottom: 20px;
     }
 
-    .divider::before,
-    .divider::after {
+    .divider::before, .divider::after {
       content: '';
       flex: 1;
       height: 1px;
-      background: #000;
+      background: var(--border);
     }
 
     .divider-text {
-      font-size: 15px;
-      color: #000;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
       white-space: nowrap;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
-    /* Admin form */
-    .admin-form {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
+    /* Form */
+    .admin-form { display: flex; flex-direction: column; gap: 12px; }
 
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
 
     .form-group label {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      color: var(--text);
-      letter-spacing: 0.01em;
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
     .form-input {
-      background: rgba(255, 255, 255, 0.75);
-      border: 1px solid rgba(0, 75, 147, 0.18);
-      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
       color: var(--text);
-      font-family: 'Inter', sans-serif;
-      font-size: 15px;
-      padding: 13px 16px;
+      font-family: var(--sans);
+      font-size: 13px;
+      padding: 9px 12px;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      width: 100%;
     }
 
     .form-input:focus {
-      border-color: var(--psu-blue);
-      box-shadow: 0 0 0 3px rgba(0, 75, 147, 0.12);
-      background: #fff;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(0,75,147,0.1);
     }
 
-    .form-input::placeholder {
-      color: #b0bec5;
-    }
+    .form-input::placeholder { color: #b0b8c4; }
 
-    .password-wrapper {
-      position: relative;
-      display: flex;
-      align-items: center;
-    }
+    .password-wrapper { position: relative; }
 
-    .password-wrapper input {
-      width: 100%;
-      padding-right: 44px;
-    }
+    .password-wrapper input { padding-right: 52px; }
 
     .pw-toggle {
       position: absolute;
       right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
       background: none;
       border: none;
       color: var(--text-muted);
       cursor: pointer;
-      padding: 4px;
-      font-size: 12px;
-      font-weight: 600;
-      transition: color 0.2s;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      padding: 2px 4px;
+      transition: color 0.15s;
+      text-transform: uppercase;
     }
 
-    .pw-toggle:hover {
-      color: var(--psu-blue);
-    }
+    .pw-toggle:hover { color: var(--psu-blue); }
 
-    /* Light blue submit button */
     .btn-admin {
-      background: var(--psu-btn-light-blue);
-      color: #003A74;
+      background: var(--text);
+      color: #fff;
       border: none;
-      border-radius: 12px;
-      padding: 15px;
-      font-family: 'Inter', sans-serif;
-      font-size: 15px;
-      font-weight: 700;
+      border-radius: 5px;
+      padding: 10px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
-      transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+      transition: background 0.15s;
       margin-top: 4px;
-      box-shadow: 0 4px 12px rgba(186, 230, 253, 0.4);
+      letter-spacing: -0.01em;
     }
 
-    .btn-admin:hover {
-      background: var(--psu-btn-light-blue-hover);
-      box-shadow: 0 6px 16px rgba(186, 230, 253, 0.5);
-      transform: translateY(-1px);
-    }
-
-    .btn-admin:active {
-      transform: scale(0.98);
-    }
+    .btn-admin:hover { background: #1f2937; }
+    .btn-admin:active { background: #374151; }
 
     .btn-admin:disabled {
-      opacity: 0.6;
+      opacity: 0.5;
       cursor: not-allowed;
-      transform: none;
     }
 
-    /* Error banner */
+    /* Error */
     .error-banner {
       background: #fef2f2;
       border: 1px solid #fecaca;
-      border-radius: 8px;
+      border-radius: 5px;
       color: var(--error);
-      font-size: 13px;
-      padding: 10px 14px;
+      font-size: 12px;
+      padding: 8px 12px;
       display: none;
+      line-height: 1.4;
     }
 
-    .error-banner.show {
-      display: block;
-    }
+    .error-banner.show { display: block; }
 
+    /* Spinner */
     .spinner {
       display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(26, 32, 44, 0.25);
-      border-top-color: #1a202c;
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
       border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      animation: spin 0.6s linear infinite;
       vertical-align: middle;
-      margin-right: 4px;
+      margin-right: 6px;
     }
 
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Fade-in */
+    .login-form-wrap {
+      animation: fadeUp 0.3s ease both;
     }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: none; }
+    }
+
   </style>
 </head>
-
 <body>
-  <div class="bg-orb bg-orb-1"></div>
-  <div class="bg-orb bg-orb-2"></div>
-  <div class="bg-orb bg-orb-3"></div>
+
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
 
   <div class="login-card">
-    <!-- PSU Blue header -->
-    <div class="card-header">
-      <div class="logo-icon">📊</div>
-      <div class="logo-title">Log Dashboard</div>
-      <div class="logo-subtitle">Prince of Songkla University · EILA</div>
-    </div>
 
-    <div class="card-body">
-      <!-- PSU SSO Button -->
-      <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
-        <span class="psu-icon">🎓</span>
-        Sign in with PSU Passport
-      </a>
-
-      <div class="divider">
-        <span class="divider-text">หรือเข้าสู่ระบบด้วย Admin</span>
+    <!-- Blue top bar -->
+    <div class="card-top">
+      <div class="brand-icon">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1" y="9" width="2" height="6" rx="1" fill="white" opacity="0.9"/>
+          <rect x="5" y="6" width="2" height="9" rx="1" fill="white" opacity="0.9"/>
+          <rect x="9" y="3" width="2" height="12" rx="1" fill="white" opacity="0.9"/>
+          <rect x="13" y="1" width="2" height="14" rx="1" fill="white" opacity="0.9"/>
+        </svg>
       </div>
-
-      <!-- User/Admin form -->
-      <form class="admin-form" id="admin-form">
-        <div class="error-banner" id="error-msg"></div>
-        <div class="form-group">
-          <label for="username">Username</label>
-          <input id="username" class="form-input" type="text" placeholder="username" autocomplete="username" required />
-        </div>
-        <div class="form-group">
-          <label for="password">Password</label>
-          <div class="password-wrapper">
-            <input id="password" class="form-input" type="password" placeholder="••••••••"
-              autocomplete="current-password" required />
-            <button type="button" id="pw-toggle" class="pw-toggle" title="Show/Hide password"
-              tabindex="-1">show</button>
-          </div>
-        </div>
-        <button type="submit" class="btn-admin" id="login-btn">
-          เข้าสู่ระบบ
-        </button>
-      </form>
+      <div class="brand-text">
+        <div class="brand-name">Log Dashboard</div>
+        <div class="brand-sub">PRINCE OF SONGKLA UNIVERSITY · EILA</div>
+      </div>
     </div>
+
+    <!-- Form body -->
+    <div class="card-body">
+      <div class="login-form-wrap">
+
+        <h1 class="form-heading">Sign in</h1>
+        <p class="form-subheading">Access your organization's log dashboard.</p>
+
+        <!-- PSU SSO -->
+        <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
+          <span class="sso-icon">
+            <svg viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="6" cy="4" r="2.5" stroke="white" stroke-width="1.2"/>
+              <path d="M1.5 10.5c0-2.485 2.015-4 4.5-4s4.5 1.515 4.5 4" stroke="white" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="btn-sso-label">Continue with PSU Passport</span>
+          <span class="btn-sso-arrow">›</span>
+        </a>
+
+        <div class="divider">
+          <span class="divider-text">or admin access</span>
+        </div>
+
+        <!-- Admin form -->
+        <form class="admin-form" id="admin-form">
+          <div class="error-banner" id="error-msg"></div>
+
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input id="username" class="form-input" type="text" placeholder="admin" autocomplete="username" required />
+          </div>
+
+          <div class="form-group">
+            <label for="password">Password</label>
+            <div class="password-wrapper">
+              <input id="password" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password" required />
+              <button type="button" id="pw-toggle" class="pw-toggle" tabindex="-1">show</button>
+            </div>
+          </div>
+
+          <button type="submit" class="btn-admin" id="login-btn">เข้าสู่ระบบ</button>
+        </form>
+
+      </div>
+    </div>
+
   </div>
 
   <script>
     const pwToggle = document.getElementById("pw-toggle");
-    const pwInput = document.getElementById("password");
+    const pwInput  = document.getElementById("password");
+
     pwToggle.addEventListener("click", () => {
-      const type = pwInput.getAttribute("type") === "password" ? "text" : "password";
-      pwInput.setAttribute("type", type);
-      pwToggle.textContent = type === "password" ? "show" : "hide";
+      const hidden = pwInput.getAttribute("type") === "password";
+      pwInput.setAttribute("type", hidden ? "text" : "password");
+      pwToggle.textContent = hidden ? "hide" : "show";
     });
 
     document.getElementById("admin-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const btn = document.getElementById("login-btn");
-      const errEl = document.getElementById("error-msg");
+      const btn      = document.getElementById("login-btn");
+      const errEl    = document.getElementById("error-msg");
       const username = document.getElementById("username").value.trim();
       const password = document.getElementById("password").value;
 
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> กำลังเข้าสู่ระบบ...';
+      btn.innerHTML = '<span class="spinner"></span>กำลังเข้าสู่ระบบ…';
       errEl.classList.remove("show");
 
       try {
@@ -433,14 +488,18 @@
           body: JSON.stringify({ username, password }),
           credentials: "include"
         });
+
         if (res.ok) {
+          if (typeof BroadcastChannel !== "undefined") {
+            new BroadcastChannel("logdash_auth").postMessage({ type: "login" });
+          }
           window.location.href = "/logstore/";
         } else {
           const data = await res.json().catch(() => ({}));
           errEl.textContent = data.detail || "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง";
           errEl.classList.add("show");
         }
-      } catch (err) {
+      } catch {
         errEl.textContent = "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้";
         errEl.classList.add("show");
       } finally {
@@ -450,5 +509,4 @@
     });
   </script>
 </body>
-
 </html>

@@ -52,3 +52,36 @@ graph TD
 - **ClickHouse**: High-performance column-oriented database for storing and querying logs.
 - **PostgreSQL**: Relational storage for users, container-user mapping, and system settings.
 - **Backup**: Dedicated service running cron jobs and a bridge API for manual backup triggers.
+
+## NEW VERSION (OTel Pipeline)
+
+### Architecture Change
+
+| Layer | Old | New |
+|-------|-----|-----|
+| Collector | Filebeat 8.13 | OTel Collector Agent (contrib 0.100.0) |
+| Buffer | Redis 128 MB (log pipeline) | OTel Gateway (in-memory batch) |
+| Ingester | Python (clickhouse-connect) | OTel Gateway (ClickHouse exporter) |
+| Nginx logs | Vector → Redis → FastAPI BLPOP → ClickHouse | Vector → OTel Gateway → ClickHouse |
+| Storage schema | `logs.container_logs`, `logs.nginx_logs` | `observability.otel_logs_local` (MergeTree) |
+| Redis role | Log buffer + cache + rate-limit | Cache + rate-limit only (log role removed) |
+
+### ClickHouse Schema (3-layer)
+
+1. **Null Engine ingress table** — absorbs OTel wire format without disk writes
+2. **Materialized View** — real-time ETL transform between ingress and storage
+3. **ReplicatedMergeTree storage table** — partitioned by day, TTL 90 days, ZSTD compression, 4 secondary indexes
+
+### Components Updated
+
+- **OTel Agent**: Reads Docker container logs, batches 8,192 records, sends to Gateway
+- **OTel Gateway**: Receives from agents + Vector, batches 50,000 records, async insert to ClickHouse
+- **Vector**: Sink changed from Redis to OpenTelemetry (gRPC) for nginx logs
+- **Backup**: Schedule moved to backend APScheduler, container now user 10001:10001
+
+### Key Files
+
+- `otel/agent-config.yaml` — OTel Agent configuration
+- `otel/gateway-config.yaml` — OTel Gateway configuration
+- `clickhouse/init.sql` — Schema with Null Engine + MV + storage table
+- `docker-compose.yml` — Stack with otel-agent + otel-gateway services

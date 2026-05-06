@@ -1,7 +1,7 @@
 /**
  * app.js — Container Log Dashboard v2
  * =====================================
- * - Auth: JWT cookie via /logstore/api/auth, redirects to /logstore/login if not authenticated
+ * - Auth: Redis session cookie via /logstore/api/auth, redirects to /logstore/login if not authenticated
  * - ClickHouse queries proxied through FastAPI /logstore/api/query (role-filtered)
  * - Export: JSV via /logstore/api/export with stack/time selection
  * - Notifications: SSE via /logstore/api/notifications/stream + in-memory history
@@ -12,13 +12,33 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE = "/logstore/api";
-const PAGE_SIZE = 12;
+
+// ── Cross-tab session sync ────────────────────────────────────────────────────
+const _authChannel = typeof BroadcastChannel !== "undefined"
+  ? new BroadcastChannel("logdash_auth") : null;
+if (_authChannel) {
+  _authChannel.onmessage = (e) => {
+    if (e.data?.type === "logout") window.location.href = "/logstore/login";
+    if (e.data?.type === "login") window.location.reload();
+  };
+}
+
+// Re-verify session when tab regains focus (catches expiry / logout from another tab)
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    fetch(`${API_BASE}/auth/me`, { credentials: "include" })
+      .then(r => { if (r.status === 401) window.location.href = "/logstore/login"; })
+      .catch(() => { });
+  }
+});
+const PAGE_SIZE = Math.max(20, Math.floor((window.innerHeight - 220) / 32));
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
   user: null,             // { username, role, user_id, display_name }
   selectedStack: null,
   stackNames: [],
+  selectedProject: null,
   search: "",
   level: "",
   sortDir: "DESC",
@@ -31,12 +51,51 @@ let state = {
   notifications: [],
   unreadCount: 0,
   notifFilter: "all",
+  analyticsDetail: null,  // { fromDate, toDate, level, label }
+  analyticsHourFilter: null,  // { fromDate, toDate } for selected hour
+  analyticsLevelFilter: null, // level string for donut click
+  analyticsPendingViewLogs: null,  // { fromDate, toDate, level } - saved before navigating to Logs
+  lastBackupId: null,  // Track last backup ID for animation
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const el = id => document.getElementById(id);
 const esc = s => String(s).replace(/'/g, "''");
 const escLike = s => esc(s).replace(/[%_\\]/g, c => "\\" + c);
+function ansiToHtml(str) {
+  if (!str) return "";
+  const colors = {
+    "30": "var(--text-dim)", // black
+    "31": "#ef4444",         // red
+    "32": "#22c55e",         // green
+    "33": "#f59e0b",         // yellow
+    "34": "#3b82f6",         // blue
+    "35": "#a855f7",         // magenta
+    "36": "#06b6d4",         // cyan
+    "37": "#f8fafc",         // white
+    "90": "#94a3b8",         // gray
+  };
+  let result = escHtml(str);
+  // Basic ANSI color/style support
+  // 1. Bold: [1m
+  result = result.replace(/\[1m/g, "<strong>");
+  // 2. Colors: [31m, [90m, etc.
+  result = result.replace(/\[(\d+)m/g, (match, code) => {
+    if (colors[code]) return `<span style="color:${colors[code]}">`;
+    if (code === "0") return "</span></strong>"; // Reset
+    return "";
+  });
+  // Close any tags that might still be open (rough safety)
+  const openSpans = (result.match(/<span/g) || []).length;
+  const closeSpans = (result.match(/<\/span/g) || []).length;
+  for (let i = 0; i < openSpans - closeSpans; i++) result += "</span>";
+  const openStrong = (result.match(/<strong/g) || []).length;
+  const closeStrong = (result.match(/<\/strong/g) || []).length;
+  for (let i = 0; i < openStrong - closeStrong; i++) result += "</strong>";
+
+  return result;
+}
+
 function escHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -70,8 +129,8 @@ function getCustomDateTime(prefix) {
 function setCustomDateTime(prefix, dateStr) {
   if (!dateStr) {
     el(`${prefix}-date`).value = "";
-    el(`${prefix}-hour`).value = "00";
-    el(`${prefix}-minute`).value = "00";
+    el(`${prefix}-hour`).value = "";
+    el(`${prefix}-minute`).value = "";
     return;
   }
   const iso = dateStr.includes("Z") ? toLocalISO(new Date(dateStr)) : dateStr.slice(0, 19);
@@ -102,6 +161,9 @@ async function checkAuth() {
     }
     state.user = await res.json();
     console.log("[SSO/AUTH] session payload (/auth/me)", state.user);
+    if (state.user.sso_raw) {
+      console.log("[SSO/AUTH] Raw SSO UserInfo:", state.user.sso_raw);
+    }
     renderUserPill();
     applyRoleUI();
     return true;
@@ -152,6 +214,9 @@ function applyRoleUI() {
   const nginxTab = el("tab-nginx");
   if (nginxTab) nginxTab.classList.toggle("hidden", !isAdmin);
 
+  // Patterns tab — all authenticated users
+  el("tab-patterns")?.classList.remove("hidden");
+
   // Settings panel — admin + super_admin
   const settingsPanel = el("sidebar-settings");
   if (settingsPanel) settingsPanel.classList.toggle("hidden", !isAdmin);
@@ -159,6 +224,7 @@ function applyRoleUI() {
 
 el("btn-logout").addEventListener("click", async () => {
   await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+  if (_authChannel) _authChannel.postMessage({ type: "logout" });
   window.location.href = "/logstore/login";
 });
 
@@ -192,17 +258,42 @@ function buildWhere(includeStack = true) {
   const parts = [];
   if (includeStack && state.selectedStack && state.stackNames.length > 0) {
     const cnames = state.stackNames.map(c => `'${esc(c)}'`).join(",");
-    parts.push(`container_name IN (${cnames})`);
+    parts.push(`ContainerName IN (${cnames})`);
+    if (state.selectedProject) {
+      parts.push(`ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'`);
+    }
   }
-  if (state.level) parts.push(`level = '${esc(state.level)}'`);
-  if (state.search) parts.push(`message ILIKE '%${escLike(state.search)}%'`);
-  if (state.fromDate) parts.push(`timestamp >= '${state.fromDate}:00'`);
-  if (state.toDate) parts.push(`timestamp <= '${state.toDate}:00'`);
+  if (state.level) {
+    const lvl = state.level.toLowerCase();
+    const isError = "Body ILIKE '%ERR%' OR Body ILIKE '%ERROR%'";
+    const isWarn = "Body ILIKE '%WARN%' OR Body ILIKE '%WARNING%' OR Body ILIKE '%WRN%'";
 
-  // DEFAULT: If no dates are selected, always restrict to last 24h 
+    if (lvl === "error") {
+      parts.push(`(lower(SeverityText) = 'error' OR ${isError})`);
+    } else if (lvl === "warn" || lvl === "warning") {
+      parts.push(`(lower(SeverityText) IN ('warn', 'warning') OR ${isWarn}) AND NOT (lower(SeverityText) = 'error' OR ${isError})`);
+    } else if (lvl === "info") {
+      parts.push(`lower(SeverityText) = 'info' AND NOT (${isError}) AND NOT (${isWarn})`);
+    } else if (lvl === "debug") {
+      parts.push(`lower(SeverityText) = 'debug' AND NOT (${isError}) AND NOT (${isWarn})`);
+    } else {
+      parts.push(`lower(SeverityText) = '${esc(lvl)}'`);
+    }
+  }
+  if (state.search) parts.push(`(Body ILIKE '%${escLike(state.search)}%' OR ContainerName ILIKE '%${escLike(state.search)}%')`);
+  if (state.fromDate) {
+    const dt = state.fromDate.replace("T", " ");
+    parts.push(`Timestamp >= '${dt}'`);
+  }
+  if (state.toDate) {
+    const dt = state.toDate.replace("T", " ");
+    parts.push(`Timestamp <= '${dt}'`);
+  }
+
+  // DEFAULT: If no dates are selected, always restrict to last 24h
   // to avoid scanning the entire database history (Heavy full-table scan).
   if (!state.fromDate && !state.toDate) {
-    parts.push(`timestamp > now() - INTERVAL 24 HOUR`);
+    parts.push(`Timestamp > now() - INTERVAL 24 HOUR`);
   }
 
   return parts.length ? "WHERE " + parts.join(" AND ") : "";
@@ -211,12 +302,15 @@ function buildWhere(includeStack = true) {
 // ── Metrics ───────────────────────────────────────────────────────────────────
 async function loadMetrics() {
   try {
+    const isError = "Body ILIKE '%ERR%' OR Body ILIKE '%ERROR%'";
+    const isWarn = "Body ILIKE '%WARN%' OR Body ILIKE '%WARNING%' OR Body ILIKE '%WRN%'";
     const rows = await apiQuery(`
-      SELECT count(), countIf(level='error'),
-             countIf(level='warn' OR level='warning'),
-             uniqExact(container_id)
-      FROM container_logs
-      WHERE timestamp > now() - INTERVAL 24 HOUR
+      SELECT count(), 
+             countIf(lower(SeverityText)='error' OR ${isError}),
+             countIf((lower(SeverityText) IN ('warn', 'warning') OR ${isWarn}) AND NOT (${isError})),
+             uniqExact(ContainerName)
+      FROM observability.otel_logs_local
+      WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName != 'nginx'
     `);
     if (rows.length) {
       const [total, errors, warnings, containers] = rows[0];
@@ -263,17 +357,14 @@ let openStacks = new Set();   // tracks manually-opened stacks across re-renders
 async function loadContainerList() {
   try {
     const rows = await apiQuery(`
-      SELECT container_name, max(timestamp) AS last_seen,
-             count() AS log_count, countIf(level='error') AS error_count,
-             if(isValidJSON(labels),
-               if(JSONExtractString(labels,'com.docker.compose.project') != '',
-                  JSONExtractString(labels,'com.docker.compose.project'),
-                  if(JSONExtractString(labels,'com_docker_compose_project') != '',
-                     JSONExtractString(labels,'com_docker_compose_project'),'Other')),
-               'Other') AS compose_project
-      FROM container_logs
-      WHERE timestamp > now() - INTERVAL 24 HOUR
-      GROUP BY container_name, compose_project
+      SELECT ContainerName, max(Timestamp) AS last_seen,
+             count() AS log_count, countIf(lower(SeverityText)='error') AS error_count,
+             if(ResourceAttributes['container.label.com.docker.compose.project'] != '',
+                ResourceAttributes['container.label.com.docker.compose.project'],
+                'Other') AS compose_project
+      FROM observability.otel_logs_local
+      WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName != 'nginx'
+      GROUP BY ContainerName, compose_project
       ORDER BY compose_project ASC, last_seen DESC LIMIT 100
     `);
     lastSidebarRows = rows;
@@ -292,7 +383,7 @@ function renderSidebar() {
   allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
   allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Containers</span>`;
   allItem.addEventListener("click", () => {
-    state.selectedStack = null; state.stackNames = []; state.page = 0;
+    state.selectedStack = null; state.stackNames = []; state.selectedProject = null; state.page = 0;
     stopLogsSSE();
     if (state.view === "logs") startLogsSSE();
     loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
@@ -312,7 +403,7 @@ function renderSidebar() {
     const dot = ageSec < dotThresholds.green ? "green"
       : ageSec < dotThresholds.amber ? "amber" : "red";
     let displayName = containerAliases[cname] || cname;
-    const itemData = { displayName, cname, dot, errorCount };
+    const itemData = { displayName, cname, dot, errorCount, project: rawProject };
     const displayProject = rawProject;
     if (!folderDataMap[displayProject]) folderDataMap[displayProject] = { items: [], rawProject };
     folderDataMap[displayProject].items.push(itemData);
@@ -366,7 +457,7 @@ function renderSidebar() {
         return;
       }
       stackItems.forEach(data => {
-        childrenContainer.appendChild(makeContainerItem(data.displayName, data.cname, data.dot, data.errorCount));
+        childrenContainer.appendChild(makeContainerItem(data.displayName, data.cname, data.dot, data.errorCount, data.project));
       });
       childrenContainer.removeAttribute("data-loaded");
     };
@@ -433,21 +524,21 @@ function renderSidebar() {
       if (e.target.closest(".stack-actions")) return;
       if (e.target.closest(".folder-icon")) return;   // icon has its own toggle handler
       if (stackItems.length > 0)
-        selectStack(stackName, stackItems.map(d => d.cname));
+        selectStack(stackName, stackItems.map(d => d.cname), rawProject);
     });
 
     folderList.appendChild(group);
   });
 }
 
-function selectStack(stackName, containerNames) {
-  state.selectedStack = stackName; state.stackNames = containerNames || []; state.page = 0;
+function selectStack(stackName, containerNames, project = null) {
+  state.selectedStack = stackName; state.stackNames = containerNames || []; state.selectedProject = project; state.page = 0;
   stopLogsSSE();
   if (state.view === "logs") startLogsSSE();
   loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
 }
 
-function makeContainerItem(name, realName, dotClass, errorCount) {
+function makeContainerItem(name, realName, dotClass, errorCount, project = null) {
   const div = document.createElement("div");
   const isSelected = state.selectedStack === realName || state.selectedStack === name;
   const isAdmin = state.user?.role === "super_admin" || state.user?.role === "admin";
@@ -463,7 +554,7 @@ function makeContainerItem(name, realName, dotClass, errorCount) {
     </div>
   `;
   div.addEventListener("click", () => {
-    selectStack(name, [realName]);
+    selectStack(name, [realName], project);
   });
   div.querySelector(".c-star")?.addEventListener("click", e => {
     e.stopPropagation(); openAddToStackModal(realName);
@@ -564,8 +655,8 @@ async function loadLogs() {
   try {
     el("table-status").textContent = "Loading…";
     const [countRows, dataRows] = await Promise.all([
-      apiQuery(`SELECT count() FROM container_logs ${where}`),
-      apiQuery(`SELECT timestamp, container_name, level, message FROM container_logs ${where} ORDER BY timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`),
+      apiQuery(`SELECT count() FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx'`),
+      apiQuery(`SELECT Timestamp, ContainerName, SeverityText, Body, TraceId FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx' ORDER BY Timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`),
     ]);
     state.totalRows = parseInt(countRows[0]?.[0] ?? 0, 10);
     const totalPages = Math.max(1, Math.ceil(state.totalRows / PAGE_SIZE));
@@ -574,28 +665,312 @@ async function loadLogs() {
     renderPagination(totalPages);
   } catch (e) {
     el("table-status").textContent = "⚠ Query failed: " + e.message;
-    el("log-body").innerHTML = `<tr><td colspan="4" class="empty-state">Error loading logs.</td></tr>`;
+    el("log-body").innerHTML = `<tr><td colspan="5" class="empty-state">Error loading logs.</td></tr>`;
   }
+}
+
+function _drillToLogs({ fromDate, toDate, level, search } = {}) {
+  if (fromDate !== undefined) {
+    state.fromDate = fromDate;
+    const [d, t] = fromDate.split("T");
+    el("range-from-date").value   = d;
+    el("range-from-hour").value   = t.slice(0, 2);
+    el("range-from-minute").value = t.slice(3, 5);
+  }
+  if (toDate !== undefined) {
+    state.toDate = toDate;
+    const [d, t] = toDate.split("T");
+    el("range-to-date").value   = d;
+    el("range-to-hour").value   = t.slice(0, 2);
+    el("range-to-minute").value = t.slice(3, 5);
+  }
+  if (level  !== undefined) { state.level  = level;  const lsel = el("level-select");  if (lsel) lsel.value = level; }
+  if (search !== undefined) { state.search = search; const sinp = el("search-input");  if (sinp) sinp.value = search; }
+  state.page = 0;
+  stopLogsSSE();
+  el("tab-logs").click();
+  startLogsSSE();
+  loadLogs();
 }
 
 function renderTable(rows) {
   const tbody = el("log-body");
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No logs found for the current filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No logs found for the current filters.</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map(([ts, cname, level, msg]) => {
-    const lvl = (level || "").toLowerCase();
+  tbody.innerHTML = rows.map(([ts, cname, level, msg, traceId]) => {
+    let lvl = (level || "").toLowerCase();
+
+    // Body-scan level override — only scan first 200 chars to avoid false positives
+    // from URL-encoded query params in access logs (e.g. %27error%27 deep in body).
+    const msgStr = String(msg);
+    if (lvl === "info" || lvl === "debug" || lvl === "—" || !lvl) {
+      const msgUpper = msgStr.slice(0, 200).toUpperCase();
+      if (msgUpper.includes("ERR") || msgUpper.includes("ERROR")) lvl = "error";
+      else if (msgUpper.includes("WARN") || msgUpper.includes("WARNING") || msgUpper.includes("WRN")) lvl = "warn";
+    }
+
     const rowCls = lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "";
     const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
     const displayName = containerAliases[cname] || cname;
+    const tsAttr = escHtml(String(ts));
+    const cnameAttr = escHtml(String(cname));
+    const msgHtml = ansiToHtml(String(msg).slice(0, 1000));
     return `<tr class="${rowCls}">
       <td class="td-ts">${formatTs(ts)}</td>
       <td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td>
       <td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
-      <td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>
+      <td class="td-msg">${msgHtml}</td>
+      <td class="td-ctx"><button class="btn-ctx" data-ts="${tsAttr}" data-cname="${cnameAttr}" title="Trace surrounding logs (±30s)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px; margin-right:4px;"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>Trace</button>${traceId ? `<button class="btn-tid" data-tid="${escHtml(traceId)}" title="TraceId Correlation: all logs with trace ${escHtml(traceId)}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:3px;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>Link</button>` : ""}</td>
     </tr>`;
   }).join("");
+
+  tbody.querySelectorAll(".btn-ctx").forEach(btn => {
+    btn.addEventListener("click", () => {
+      openContextModal(btn.dataset.cname, btn.dataset.ts);
+    });
+  });
+
+  tbody.querySelectorAll(".btn-tid").forEach(btn => {
+    btn.addEventListener("click", () => openTraceModal(btn.dataset.tid));
+  });
+}
+
+// ── Context modal (Phase 12) ────────────────────────────────────────────────
+function fmtRelative(deltaMs) {
+  const s = deltaMs / 1000;
+  const abs = Math.abs(s);
+  if (abs < 1) return s === 0 ? "anchor" : `${s > 0 ? "+" : "−"}${abs.toFixed(2)}s`;
+  if (abs < 60) return `${s > 0 ? "+" : "−"}${abs.toFixed(1)}s`;
+  return `${s > 0 ? "+" : "−"}${(abs / 60).toFixed(1)}m`;
+}
+
+async function openContextModal(container, anchorTs, windowSec = 30) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay ctx-overlay";
+  overlay.innerHTML = `
+    <div class="ctx-modal">
+      <header class="ctx-header">
+        <div class="ctx-header-left">
+          <div class="ctx-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>
+            <span>Trace surrounding logs</span>
+          </div>
+          <div class="ctx-meta">
+            <span class="ctx-pill ctx-pill-mono" title="${escHtml(container)}">${escHtml(container)}</span>
+            <span class="ctx-pill">±<span id="ctx-window">${windowSec}</span>s</span>
+            <span class="ctx-pill ctx-pill-muted">around ${formatTs(anchorTs)}</span>
+          </div>
+        </div>
+        <button id="ctx-close" class="ctx-close-btn" aria-label="Close">✕</button>
+      </header>
+
+      <div class="ctx-toolbar">
+        <div class="ctx-window-toggle" role="tablist">
+          <button class="ctx-win" data-win="30">±30s</button>
+          <button class="ctx-win" data-win="60">±60s</button>
+          <button class="ctx-win" data-win="120">±2m</button>
+          <button class="ctx-win" data-win="300">±5m</button>
+        </div>
+        <button id="ctx-goto-anchor" class="ctx-goto-anchor" title="Jump to anchor log">⊙ Anchor</button>
+        <div id="ctx-status" class="ctx-toolbar-status">Loading…</div>
+      </div>
+
+      <div class="ctx-body-wrapper">
+        <table id="ctx-table" class="ctx-table">
+          <thead>
+            <tr>
+              <th class="ctx-col-rel">Δ</th>
+              <th class="ctx-col-ts">Timestamp</th>
+              <th class="ctx-col-lvl">Level</th>
+              <th class="ctx-col-msg">Message</th>
+            </tr>
+          </thead>
+          <tbody id="ctx-body"></tbody>
+        </table>
+      </div>
+
+      <footer class="ctx-footer">
+        <div id="ctx-summary" class="ctx-summary"></div>
+        <div class="ctx-hint">Esc to close · click outside to dismiss</div>
+      </footer>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => { document.removeEventListener("keydown", onKey); overlay.remove(); };
+  const onKey = e => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+  overlay.querySelector("#ctx-close").addEventListener("click", close);
+  overlay.querySelectorAll(".ctx-win").forEach(b => {
+    b.addEventListener("click", () => {
+      overlay.querySelectorAll(".ctx-win").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      loadCtx(parseInt(b.dataset.win, 10));
+    });
+  });
+  overlay.querySelector("#ctx-goto-anchor").addEventListener("click", () => {
+    const anchorRow = overlay.querySelector("#ctx-body tr[data-anchor='true']");
+    if (anchorRow) {
+      anchorRow.scrollIntoView({ block: "center", behavior: "smooth" });
+      anchorRow.classList.add("row-anchor-flash");
+      setTimeout(() => anchorRow.classList.remove("row-anchor-flash"), 1000);
+    }
+  });
+
+  async function loadCtx(win) {
+    overlay.querySelector("#ctx-window").textContent = win;
+    overlay.querySelector("#ctx-status").innerHTML = `<span class="ctx-spinner"></span> Loading ±${win}s window…`;
+    overlay.querySelector("#ctx-body").innerHTML = "";
+    overlay.querySelector("#ctx-summary").textContent = "";
+    overlay.querySelectorAll(".ctx-win").forEach(x => {
+      x.classList.toggle("active", parseInt(x.dataset.win, 10) === win);
+    });
+    try {
+      const url = `/logstore/api/logs/context?container=${encodeURIComponent(container)}&ts=${encodeURIComponent(anchorTs)}&window_sec=${win}`;
+      const r = await fetch(url, { credentials: "include" });
+      if (!r.ok) {
+        const txt = await r.text();
+        overlay.querySelector("#ctx-status").innerHTML = `<span style="color:var(--error,#e11d48);">Error ${r.status}</span> ${escHtml(txt.slice(0, 140))}`;
+        return;
+      }
+      const data = await r.json();
+      const rows = data.rows || [];
+      if (!rows.length) {
+        overlay.querySelector("#ctx-status").innerHTML = `<span style="color:var(--text-muted);">No surrounding logs in window.</span>`;
+        return;
+      }
+      const anchorMs = new Date(anchorTs).getTime();
+      let bestIdx = 0, bestDiff = Infinity;
+      rows.forEach((r, i) => {
+        const d = Math.abs(new Date(r[0]).getTime() - anchorMs);
+        if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+      });
+      let errCount = 0, warnCount = 0;
+      rows.forEach(r => {
+        const lvl = (r[2] || "").toLowerCase();
+        if (lvl === "error") errCount++;
+        else if (lvl === "warn" || lvl === "warning") warnCount++;
+      });
+      overlay.querySelector("#ctx-status").innerHTML = `<span class="ctx-status-ok">✓</span> Loaded ${rows.length} row${rows.length === 1 ? "" : "s"}`;
+      overlay.querySelector("#ctx-summary").innerHTML = `
+        <span class="ctx-stat"><strong>${rows.length}</strong> total</span>
+        ${errCount > 0 ? `<span class="ctx-stat ctx-stat-error"><strong>${errCount}</strong> error${errCount === 1 ? "" : "s"}</span>` : ""}
+        ${warnCount > 0 ? `<span class="ctx-stat ctx-stat-warn"><strong>${warnCount}</strong> warn${warnCount === 1 ? "" : "s"}</span>` : ""}
+      `;
+      overlay.querySelector("#ctx-body").innerHTML = rows.map(([ts, _cn, level, msg], i) => {
+        const lvl = (level || "").toLowerCase();
+        const isAnchor = i === bestIdx;
+        const rowCls = (isAnchor ? "row-anchor " : "") +
+          (lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "");
+        const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
+        const delta = new Date(ts).getTime() - anchorMs;
+        const relCls = isAnchor ? "ctx-rel-anchor" : (delta < 0 ? "ctx-rel-before" : "ctx-rel-after");
+        const msgHtml = ansiToHtml(String(msg).slice(0, 1500));
+        return `<tr class="${rowCls}"${isAnchor ? ' data-anchor="true"' : ''}>
+          <td class="ctx-rel ${relCls}">${isAnchor ? "▶" : ""} ${fmtRelative(delta)}</td>
+          <td class="ctx-ts">${formatTs(ts)}</td>
+          <td class="ctx-lvl"><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
+          <td class="ctx-msg">${msgHtml}</td>
+        </tr>`;
+      }).join("");
+      const anchorRow = overlay.querySelectorAll("#ctx-body tr")[bestIdx];
+      if (anchorRow) {
+        setTimeout(() => anchorRow.scrollIntoView({ block: "center", behavior: "smooth" }), 50);
+      }
+    } catch (e) {
+      overlay.querySelector("#ctx-status").textContent = "Failed: " + e.message;
+    }
+  }
+
+  loadCtx(windowSec);
+}
+
+// ── TraceId Correlation modal (Phase 13) ──────────────────────────────────────
+async function openTraceModal(traceId) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay ctx-overlay";
+  overlay.innerHTML = `
+    <div class="ctx-modal">
+      <header class="ctx-header">
+        <div class="ctx-header-left">
+          <span class="ctx-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>Trace Correlation</span>
+          <span class="ctx-pill ctx-pill-mono">${escHtml(traceId.slice(0, 16))}…</span>
+        </div>
+        <div class="ctx-header-actions">
+          <button id="tid-copy" class="ctx-icon-btn" title="Copy TraceId">📋</button>
+          <button id="tid-close" class="ctx-close-btn">✕</button>
+        </div>
+      </header>
+      <div id="tid-status" class="ctx-status loading">
+        <div class="spinner"></div>
+        <span>Fetching logs…</span>
+      </div>
+      <div class="ctx-body-wrapper">
+        <table class="ctx-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Service</th>
+              <th>Level</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="tid-body"></tbody>
+        </table>
+      </div>
+      <footer class="ctx-footer">
+        <div id="tid-summary"></div>
+        <div class="ctx-hint">Esc • Click outside</div>
+      </footer>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector("#tid-close").addEventListener("click", close);
+  overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", function esc(e) {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+  });
+  overlay.querySelector("#tid-copy").addEventListener("click", () => {
+    navigator.clipboard.writeText(traceId).catch(() => {});
+  });
+
+  try {
+    const data = await fetch(`/logstore/api/logs/trace/${encodeURIComponent(traceId)}`).then(r => r.json());
+    const rows = data.rows || [];
+    const tbody = overlay.querySelector("#tid-body");
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-ctx">No logs found for this TraceId.</td></tr>`;
+      overlay.querySelector("#tid-status").innerHTML = `<span>No logs found</span>`;
+      overlay.querySelector("#tid-status").classList.remove("loading");
+      return;
+    }
+    const badgeMap = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" };
+    let errCount = 0, warnCount = 0;
+    tbody.innerHTML = rows.map(([ts, svc, lvl, body, cname]) => {
+      const l = (lvl || "").toLowerCase();
+      const cls = l === "error" ? "row-error" : (l === "warn" || l === "warning") ? "row-warn" : "";
+      if (l === "error") errCount++;
+      else if (l === "warn" || l === "warning") warnCount++;
+      const badgeCls = badgeMap[l] || "badge-other";
+      return `<tr class="${cls}">
+        <td class="td-ts">${formatTs(ts)}</td>
+        <td class="td-cid">${escHtml(cname || svc)}</td>
+        <td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td>
+        <td class="td-msg">${ansiToHtml(String(body).slice(0, 1000))}</td>
+      </tr>`;
+    }).join("");
+    overlay.querySelector("#tid-status").innerHTML = `<span style="color:var(--accent)">✓</span> Found ${rows.length} log${rows.length > 1 ? "s" : ""}`;
+    overlay.querySelector("#tid-status").classList.remove("loading");
+    overlay.querySelector("#tid-summary").innerHTML = `${rows.length} correlated log${rows.length > 1 ? "s" : ""}${errCount ? ` · <span style="color:var(--error)">${errCount} error${errCount > 1 ? "s" : ""}</span>` : ""}${warnCount ? ` · <span style="color:var(--warn)">${warnCount} warn${warnCount > 1 ? "s" : ""}</span>` : ""}`;
+  } catch (e) {
+    overlay.querySelector("#tid-status").innerHTML = `<span style="color:var(--error)">Error: ${escHtml(e.message)}</span>`;
+    overlay.querySelector("#tid-status").classList.remove("loading");
+    overlay.querySelector("#tid-body").innerHTML = `<tr><td colspan="4" class="empty-ctx" style="color:var(--error)">Failed to load logs.</td></tr>`;
+  }
 }
 
 function renderPagination(totalPages) {
@@ -634,6 +1009,7 @@ function startLogsSSE() {
   if (state.view !== "logs" || !canLiveLogs()) return;
   const params = new URLSearchParams();
   if (state.stackNames.length > 0) params.set("container_names", state.stackNames.join(","));
+  if (state.selectedProject) params.set("compose_project", state.selectedProject);
   if (state.level) params.set("level", state.level);
   if (state.search) params.set("search", state.search);
   logsSSE = new EventSource(`${API_BASE}/logs/stream?${params}`, { withCredentials: true });
@@ -647,7 +1023,7 @@ function startLogsSSE() {
   logsSSE.onerror = () => {
     setLiveBadge("table-status", false);
     logsSSE?.close(); logsSSE = null;
-    setTimeout(() => { if (state.view === "logs") startLogsSSE(); }, 10_000);
+    setTimeout(() => { if (state.view === "logs") startLogsSSE(); }, 3_000);
   };
 }
 
@@ -658,15 +1034,24 @@ function stopLogsSSE() {
 
 function prependLogRows(newRows) {
   const tbody = el("log-body");
-  if (!tbody || tbody.querySelector(".empty-state")) return;
+  if (!tbody) return;
+  if (tbody.querySelector(".empty-state")) tbody.innerHTML = "";
   [...newRows].reverse().forEach(([ts, cname, level, msg]) => {
-    const lvl = (level || "").toLowerCase();
+    let lvl = (level || "").toLowerCase();
+    const msgStr = String(msg);
+    if (lvl === "info" || lvl === "debug" || lvl === "—" || !lvl) {
+      const msgUpper = msgStr.toUpperCase();
+      if (msgUpper.includes("ERR") || msgUpper.includes("ERROR")) lvl = "error";
+      else if (msgUpper.includes("WARN") || msgUpper.includes("WARNING") || msgUpper.includes("WRN")) lvl = "warn";
+    }
+
     const rowCls = lvl === "error" ? "row-error" : (lvl === "warn" || lvl === "warning") ? "row-warn" : "";
     const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvl] || "badge-other";
     const displayName = containerAliases[cname] || cname;
     const tr = document.createElement("tr");
     tr.className = (rowCls + " row-new").trim();
-    tr.innerHTML = `<td class="td-ts">${formatTs(ts)}</td><td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td><td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td><td class="td-msg">${escHtml(String(msg)).slice(0, 800)}</td>`;
+    const msgHtml = ansiToHtml(String(msg).slice(0, 1000));
+    tr.innerHTML = `<td class="td-ts">${formatTs(ts)}</td><td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td><td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td><td class="td-msg">${msgHtml}</td><td class="td-ctx"></td>`;
     tbody.insertBefore(tr, tbody.firstChild);
   });
   while (tbody.rows.length > PAGE_SIZE) tbody.deleteRow(tbody.rows.length - 1);
@@ -694,7 +1079,7 @@ function startNginxSSE() {
   nginxSSE.onerror = () => {
     setLiveBadge("nginx-table-status", false);
     nginxSSE?.close(); nginxSSE = null;
-    setTimeout(() => { if (state.view === "nginx") startNginxSSE(); }, 10_000);
+    setTimeout(() => { if (state.view === "nginx") startNginxSSE(); }, 3_000);
   };
 }
 
@@ -705,7 +1090,8 @@ function stopNginxSSE() {
 
 function prependNginxRows(newRows) {
   const tbody = el("nginx-log-body");
-  if (!tbody || tbody.querySelector(".empty-state")) return;
+  if (!tbody) return;
+  if (tbody.querySelector(".empty-state")) tbody.innerHTML = "";
   [...newRows].reverse().forEach(([ts, ip, method, referer, path, status, bytes, time]) => {
     const statusNum = parseInt(status) || 0;
     const cls = statusNum >= 500 ? "row-error" : statusNum >= 400 ? "row-warn" : "";
@@ -757,6 +1143,7 @@ async function loadNginxLogs() {
   const status = el("nginx-status-select")?.value;
   const method = el("nginx-method-select")?.value;
   const path = el("nginx-search-input")?.value?.trim();
+  nginxSearchTerm = path;
   const order = el("nginx-sort-select")?.value || "desc";
   const fromDate = el("nginx-range-from-date")?.value;
   const fromHour = el("nginx-range-from-hour")?.value;
@@ -771,7 +1158,7 @@ async function loadNginxLogs() {
   params.set("hours", String(nginxAnalyticsHours));
   if (status) params.set("status", status);
   if (method) params.set("method", method);
-  if (path) params.set("path_contains", path);
+  if (path) params.set("search", path);
   if (fromDate) {
     const fromTs = `${fromDate} ${fromHour || "00"}:${fromMin || "00"}:00`;
     params.set("from_time", fromTs);
@@ -793,27 +1180,33 @@ async function loadNginxLogs() {
     renderNginxPagination(totalPages);
   } catch (e) {
     el("nginx-table-status").textContent = "⚠ Query failed: " + e.message;
-    el("nginx-log-body").innerHTML = `<tr><td colspan="7" class="empty-state">Error loading nginx logs.</td></tr>`;
+    el("nginx-log-body").innerHTML = `<tr><td colspan="8" class="empty-state">Error loading nginx logs.</td></tr>`;
   }
 }
 
 function renderNginxTable(rows) {
   const tbody = el("nginx-log-body");
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No nginx logs found for the current filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No nginx logs found for the current filters.</td></tr>`;
     return;
   }
+  const hl = (txt) => {
+    if (!nginxSearchTerm) return escHtml(String(txt));
+    const term = nginxSearchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(${term})`, "gi");
+    return escHtml(String(txt)).replace(re, "<mark>$1</mark>");
+  };
   tbody.innerHTML = rows.map(([ts, ip, method, referer, path, status, bytes, time]) => {
     const statusNum = parseInt(status) || 0;
     const cls = statusNum >= 500 ? "row-error" : statusNum >= 400 ? "row-warn" : "";
     referer = String(referer);
-    const refererDisplay = referer === "-" || !referer ? "-" : escHtml(referer.slice(0, 100));
+    const refererDisplay = referer === "-" || !referer ? "-" : hl(referer.slice(0, 100));
     return `<tr class="${cls}">
-      <td class="td-ip">${escHtml(String(ip))}</td>
+      <td class="td-ip">${hl(ip)}</td>
       <td class="td-ts">${formatTs(ts)}</td>
-      <td>${escHtml(method)}</td>
+      <td>${hl(method)}</td>
       <td class="td-referer" title="${referer === "-" ? "" : escHtml(referer)}">${refererDisplay}</td>
-      <td class="td-path" title="${escHtml(path)}">${escHtml(String(path).slice(0, 80))}</td>
+      <td class="td-path" title="${escHtml(path)}">${hl(String(path).slice(0, 80))}</td>
       <td><span class="badge ${statusNum >= 500 ? "badge-error" : statusNum >= 400 ? "badge-warn" : "badge-info"}">${statusNum}</span></td>
       <td>${fmt(bytes)}</td>
       <td>${parseFloat(time || 0).toFixed(4)}s</td>
@@ -830,6 +1223,10 @@ function renderNginxPagination(totalPages) {
 // ── Nginx Analytics ───────────────────────────────────────────────────────────
 let nginxChartTraffic = null;
 let nginxAnalyticsHours = 24;
+let nginxSearchTerm = "";
+let nginxTrafficKeys = [];
+let _nginxIPsCache = null;
+let _nginxPathsCache = null;
 
 function fmtBytes(b) {
   b = parseInt(b) || 0;
@@ -849,6 +1246,13 @@ async function loadNginxOverview() {
     el("nx-error-rate").textContent = errRate.toFixed(1) + "%";
     el("nx-error-rate").closest(".metric-card").className = "metric-card" + (errRate > 5 ? " error" : errRate > 1 ? " warn" : "");
     el("nx-bytes").textContent = fmtBytes(d.total_bytes || 0);
+    const errCard = el("nx-error-rate")?.closest(".metric-card");
+    if (errCard && !errCard._nginxErrBound) {
+      errCard._nginxErrBound = true;
+      errCard.style.cursor = "pointer";
+      errCard.title = "Click to inspect error logs";
+      errCard.addEventListener("click", () => openNginxTraceModal({ mode: "errors" }));
+    }
   } catch (e) { console.error("nginx overview:", e); }
 }
 
@@ -869,8 +1273,9 @@ async function loadNginxTraffic() {
       else minuteMap[k].ok += c;
     }
     const keys = Object.keys(minuteMap).sort();
+    nginxTrafficKeys = keys;
     const fmtLbl = k => {
-      const d = new Date(k.includes("T") ? k : k.replace(" ", "T") + "Z");
+      const d = new Date(k.includes("T") ? k : k.replace(" ", "T"));
       return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
     };
     if (nginxChartTraffic) nginxChartTraffic.destroy();
@@ -880,15 +1285,25 @@ async function loadNginxTraffic() {
       data: {
         labels: keys.map(fmtLbl),
         datasets: [
-          { label: "2xx", data: keys.map(k => minuteMap[k].ok),   borderColor: "#059669", backgroundColor: "rgba(5,150,105,0.1)",   fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-          { label: "4xx", data: keys.map(k => minuteMap[k].warn), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,0.08)",   fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-          { label: "5xx", data: keys.map(k => minuteMap[k].err),  borderColor: "#e11d48", backgroundColor: "rgba(225,29,72,0.12)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+          { label: "2xx", data: keys.map(k => minuteMap[k].ok), borderColor: "#059669", backgroundColor: "rgba(5,150,105,0.1)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+          { label: "4xx", data: keys.map(k => minuteMap[k].warn), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,0.08)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
+          { label: "5xx", data: keys.map(k => minuteMap[k].err), borderColor: "#e11d48", backgroundColor: "rgba(225,29,72,0.12)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
         plugins: { legend: { position: "top", labels: { boxWidth: 10, font: { size: 11 } } } },
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const idx = elements[0].index;
+          const dsIdx = elements[0].datasetIndex;
+          const statusBucket = ["2xx", "4xx", "5xx"][dsIdx] ?? "2xx";
+          openNginxTraceModal({ mode: "time", minuteKey: nginxTrafficKeys[idx], statusBucket, chartIdx: idx });
+        },
+        onHover: (evt, elements) => {
+          evt.native.target.style.cursor = elements.length ? "pointer" : "default";
+        },
         scales: {
           y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" } },
           x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 10 } } }
@@ -900,37 +1315,48 @@ async function loadNginxTraffic() {
 
 async function loadNginxTopPaths() {
   try {
-    const res = await fetch(`${API_BASE}/admin/nginx-logs/top-paths?hours=${nginxAnalyticsHours}&limit=15`, { credentials: "include" });
-    if (!res.ok) return;
-    const rows = await res.json();
+    const now = Date.now();
+    if (!_nginxPathsCache || now - _nginxPathsCache.ts > 60000) {
+      const res = await fetch(`${API_BASE}/admin/nginx-logs/top-paths?hours=${nginxAnalyticsHours}&limit=15`, { credentials: "include" });
+      if (!res.ok) return;
+      _nginxPathsCache = { data: await res.json(), ts: now };
+    }
+    const rows = _nginxPathsCache.data;
     const tbody = el("nginx-top-paths-body");
     if (!rows.length) { tbody.innerHTML = `<tr><td colspan="5" style="padding:8px;color:var(--text-muted)">No data</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => {
       const errs = parseInt(r.errors || 0);
-      return `<tr style="border-bottom:1px solid var(--border);">
+      return `<tr class="nginx-path-row" data-path="${escHtml(String(r.path || ""))}" style="border-bottom:1px solid var(--border); cursor:pointer;">
         <td style="padding:4px 8px; color:var(--text-muted);">${escHtml(String(r.referer || "-"))}</td>
         <td style="padding:4px 8px; font-family:monospace; word-break:break-all; max-width:400px;">${escHtml(String(r.path || ""))}</td>
         <td style="padding:4px 8px; text-align:right;">${fmt(parseInt(r.total || 0))}</td>
         <td style="padding:4px 8px; text-align:right; color:${errs > 0 ? "var(--error)" : "inherit"}">${fmt(errs)}</td>
       </tr>`;
     }).join("");
+    tbody.querySelectorAll(".nginx-path-row").forEach(tr => {
+      tr.addEventListener("click", () => openNginxTraceModal({ mode: "path", path: tr.dataset.path }));
+    });
   } catch (e) { console.error("nginx top paths:", e); }
 }
 
 async function loadNginxTopIPs() {
   try {
-    const res = await fetch(`${API_BASE}/admin/nginx-logs/top-ips?hours=${nginxAnalyticsHours}&limit=10`, { credentials: "include" });
-    if (!res.ok) return;
-    const rows = await res.json();
+    const now = Date.now();
+    if (!_nginxIPsCache || now - _nginxIPsCache.ts > 60000) {
+      const res = await fetch(`${API_BASE}/admin/nginx-logs/top-ips?hours=${nginxAnalyticsHours}&limit=10`, { credentials: "include" });
+      if (!res.ok) return;
+      _nginxIPsCache = { data: await res.json(), ts: now };
+    }
+    const rows = _nginxIPsCache.data;
     const container = el("nginx-top-ips-list");
     if (!rows.length) { container.innerHTML = `<div style="padding:8px;color:var(--text-muted)">No data</div>`; return; }
     const maxTotal = Math.max(...rows.map(r => parseInt(r.total || 0)), 1);
     container.innerHTML = rows.map(r => {
       const total = parseInt(r.total || 0);
-      const errs  = parseInt(r.errors || 0);
-      const pct   = Math.round(total / maxTotal * 100);
+      const errs = parseInt(r.errors || 0);
+      const pct = Math.round(total / maxTotal * 100);
       const errPct = Math.round(errs / Math.max(total, 1) * 100);
-      return `<div style="padding:5px 8px; border-bottom:1px solid var(--border);">
+      return `<div class="nginx-ip-row" data-ip="${escHtml(String(r.remote_addr || ""))}" style="padding:5px 8px; border-bottom:1px solid var(--border); cursor:pointer;">
         <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
           <span style="font-family:monospace; font-size:11px;">${escHtml(String(r.remote_addr || ""))}</span>
           <span style="color:var(--text-muted); font-size:11px;">${fmt(total)}</span>
@@ -940,11 +1366,180 @@ async function loadNginxTopIPs() {
         </div>
       </div>`;
     }).join("");
+    container.querySelectorAll(".nginx-ip-row").forEach(div => {
+      div.addEventListener("click", () => openNginxTraceModal({ mode: "ip", remote_addr: div.dataset.ip }));
+    });
   } catch (e) { console.error("nginx top IPs:", e); }
 }
 
 async function loadNginxAnalytics() {
   await Promise.all([loadNginxOverview(), loadNginxTraffic(), loadNginxTopPaths(), loadNginxTopIPs()]);
+}
+
+async function openNginxTraceModal({ mode, minuteKey, statusBucket, chartIdx, remote_addr, path }) {
+  let chartHighlightIdx = (mode === "time" && chartIdx != null) ? chartIdx : -1;
+  if (chartHighlightIdx >= 0 && nginxChartTraffic) {
+    nginxChartTraffic.data.datasets.forEach(ds => {
+      ds.pointRadius = ds.data.map((_, i) => i === chartHighlightIdx ? 5 : 0);
+    });
+    nginxChartTraffic.update("none");
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay ctx-overlay";
+  overlay.innerHTML = `
+    <div class="ctx-modal" style="min-width:min(1100px,96vw);">
+      <header class="ctx-header">
+        <span id="nx-modal-title">Loading…</span>
+        <button id="nx-modal-close" class="ctx-close">✕</button>
+      </header>
+      <div id="nx-modal-summary" style="padding:8px 16px; font-size:12px; opacity:.7; border-bottom:1px solid var(--border);"></div>
+      <div id="nx-modal-body" class="ctx-body"><p style="padding:16px;opacity:.5">Loading…</p></div>
+      <div class="ctx-footer" style="display:flex;justify-content:space-between;align-items:center;">
+        <div id="nx-modal-pages" style="display:flex;gap:8px;align-items:center;"></div>
+        <button id="nx-modal-apply" class="btn-secondary" style="font-size:11px;padding:4px 10px;">Apply filter to Nginx tab →</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const hours = nginxAnalyticsHours;
+  const PAGE_SIZE = 100;
+
+  const close = () => {
+    if (chartHighlightIdx >= 0 && nginxChartTraffic) {
+      nginxChartTraffic.data.datasets.forEach(ds => { ds.pointRadius = 0; });
+      nginxChartTraffic.update("none");
+    }
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = e => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+  overlay.querySelector("#nx-modal-close").addEventListener("click", close);
+
+  overlay.querySelector("#nx-modal-apply").addEventListener("click", () => {
+    close();
+    if (mode === "errors") {
+      const sel = el("nginx-status-select"); if (sel) sel.value = "500";
+    } else if (mode === "ip" && remote_addr) {
+      const inp = el("nginx-search-input"); if (inp) inp.value = remote_addr;
+    } else if (mode === "time" && minuteKey) {
+      const mk = minuteKey.replace("T", " ");
+      const datePart = mk.slice(0, 10);
+      const hourPart = mk.slice(11, 13);
+      const minPart  = mk.slice(14, 16);
+      if (el("nginx-range-from-date"))   el("nginx-range-from-date").value   = datePart;
+      if (el("nginx-range-from-hour"))   el("nginx-range-from-hour").value   = hourPart;
+      if (el("nginx-range-from-minute")) el("nginx-range-from-minute").value = minPart;
+      if (el("nginx-range-to-date"))     el("nginx-range-to-date").value     = datePart;
+      if (el("nginx-range-to-hour"))     el("nginx-range-to-hour").value     = hourPart;
+      if (el("nginx-range-to-minute"))   el("nginx-range-to-minute").value   = minPart;
+      if (el("nginx-search-input"))      el("nginx-search-input").value      = "";
+    } else if (mode === "path" && path) {
+      const inp = el("nginx-search-input"); if (inp) inp.value = path;
+    }
+    loadNginxLogs();
+  });
+
+  const titles = {
+    time: `Logs · ${minuteKey ? minuteKey.slice(11, 16) : ""} · ${statusBucket || "all"}`,
+    ip: `IP: ${remote_addr}`,
+    path: `Path: ${path}`,
+    errors: `Error Logs (4xx+5xx) · last ${hours}h`,
+  };
+  overlay.querySelector("#nx-modal-title").textContent = titles[mode] || mode;
+
+  if (mode === "ip" && remote_addr) {
+    try {
+      const s = await fetch(`${API_BASE}/admin/nginx-logs/ip-summary?remote_addr=${encodeURIComponent(remote_addr)}&hours=${hours}`, { credentials: "include" }).then(r => r.json());
+      overlay.querySelector("#nx-modal-summary").textContent =
+        `${fmt(s.total)} reqs · ${s.error_rate}% errors · first ${formatTs(s.first_seen)} · last ${formatTs(s.last_seen)}`;
+    } catch { /* skip */ }
+  } else if (mode === "path" && path) {
+    try {
+      const s = await fetch(`${API_BASE}/admin/nginx-logs/path-summary?path=${encodeURIComponent(path)}&hours=${hours}`, { credentials: "include" }).then(r => r.json());
+      overlay.querySelector("#nx-modal-summary").textContent =
+        `${fmt(s.total)} reqs · ${s.error_rate}% errors · first ${formatTs(s.first_seen)} · last ${formatTs(s.last_seen)}`;
+    } catch { /* skip */ }
+  }
+
+  async function loadPage(page) {
+    overlay.querySelector("#nx-modal-body").innerHTML = `<p style="padding:16px;opacity:.5">Loading…</p>`;
+    try {
+      const params = new URLSearchParams({ page, page_size: PAGE_SIZE, hours });
+      params.set("order", mode === "ip" ? "desc" : "asc");
+      if (mode === "time" && minuteKey) {
+        params.set("from_time", minuteKey);
+        const dt = new Date(minuteKey.includes("T") ? minuteKey : minuteKey.replace(" ", "T") + "Z");
+        params.set("to_time", new Date(dt.getTime() + 60000).toISOString().slice(0, 19).replace("T", " "));
+        if (statusBucket === "4xx") params.set("min_status", "400");
+        if (statusBucket === "5xx") params.set("min_status", "500");
+      } else if (mode === "ip" && remote_addr) {
+        params.set("remote_addr", remote_addr);
+      } else if (mode === "path" && path) {
+        params.set("path_contains", path);
+      } else if (mode === "errors") {
+        params.set("min_status", "400");
+      }
+
+      const data = await fetch(`${API_BASE}/admin/nginx-logs/logs?${params}`, { credentials: "include" }).then(r => r.json());
+      const rows = data.data || [];
+      const totalPages = data.pages || 1;
+
+      const pagesEl = overlay.querySelector("#nx-modal-pages");
+      pagesEl.innerHTML = `
+        <button id="nx-pg-prev" class="btn-ghost" style="font-size:11px;padding:3px 8px;" ${page <= 1 ? "disabled" : ""}>← Prev</button>
+        <span style="font-size:11px;opacity:.6">Page ${page} / ${totalPages} · ${data.total || 0} rows</span>
+        <button id="nx-pg-next" class="btn-ghost" style="font-size:11px;padding:3px 8px;" ${page >= totalPages ? "disabled" : ""}>Next →</button>`;
+      pagesEl.querySelector("#nx-pg-prev")?.addEventListener("click", () => loadPage(page - 1));
+      pagesEl.querySelector("#nx-pg-next")?.addEventListener("click", () => loadPage(page + 1));
+
+      if (!rows.length) {
+        overlay.querySelector("#nx-modal-body").innerHTML = `<p style="padding:16px;opacity:.5">No matching nginx logs.</p>`;
+        return;
+      }
+
+      const showIP = mode !== "ip";
+      overlay.querySelector("#nx-modal-body").innerHTML = `
+        <table class="ctx-table" style="table-layout:fixed;">
+          <colgroup>
+            <col style="width:148px;">
+            <col style="width:80px;">
+            <col style="width:auto;">
+            <col style="width:60px;">
+            <col style="width:72px;">
+            <col style="width:72px;">
+            ${showIP ? `<col style="width:120px;">` : ""}
+            <col style="width:160px;">
+          </colgroup>
+          <thead><tr>
+            <th>Timestamp</th><th>Method</th><th>Path</th>
+            <th>Status</th><th>Bytes</th><th>Time</th>
+            ${showIP ? "<th>IP</th>" : ""}<th>Referer</th>
+          </tr></thead>
+          <tbody>${rows.filter(([ts, ip, method]) => ts || method).map(([ts, ip, method, referer, rpath, status, bytes, rtime]) => {
+        const s = parseInt(status) || 0;
+        const cls = s >= 500 ? "row-error" : s >= 400 ? "row-warn" : "";
+        const badgeCls = s >= 500 ? "badge-error" : s >= 400 ? "badge-warn" : "badge-info";
+        return `<tr class="${cls}">
+              <td class="td-ts">${formatTs(ts)}</td>
+              <td><span style="font-family:monospace;font-size:10px;">${escHtml(method || "—")}</span></td>
+              <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:10px;" title="${escHtml(rpath || "")}">${escHtml(rpath || "—")}</td>
+              <td>${s ? `<span class="badge ${badgeCls}">${s}</span>` : "—"}</td>
+              <td style="font-size:11px;">${fmtBytes(parseInt(bytes) || 0)}</td>
+              <td style="font-size:11px;">${parseFloat(rtime || 0).toFixed(3)}s</td>
+              ${showIP ? `<td style="font-family:monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(ip || "")}</td>` : ""}
+              <td style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(referer || "")}">${escHtml(referer || "—")}</td>
+            </tr>`;
+      }).join("")}</tbody>
+        </table>`;
+    } catch (e) {
+      overlay.querySelector("#nx-modal-body").innerHTML = `<p style="padding:16px;color:var(--error)">Error: ${escHtml(e.message)}</p>`;
+    }
+  }
+
+  loadPage(1);
 }
 
 function resetNginxFilters() {
@@ -953,35 +1548,48 @@ function resetNginxFilters() {
   if (el("nginx-method-select")) el("nginx-method-select").value = "";
   if (el("nginx-sort-select")) el("nginx-sort-select").value = "desc";
   if (el("nginx-range-from-date")) el("nginx-range-from-date").value = "";
-  if (el("nginx-range-from-hour")) el("nginx-range-from-hour").value = "00";
-  if (el("nginx-range-from-minute")) el("nginx-range-from-minute").value = "00";
+  if (el("nginx-range-from-hour")) el("nginx-range-from-hour").value = "";
+  if (el("nginx-range-from-minute")) el("nginx-range-from-minute").value = "";
   if (el("nginx-range-to-date")) el("nginx-range-to-date").value = "";
-  if (el("nginx-range-to-hour")) el("nginx-range-to-hour").value = "23";
-  if (el("nginx-range-to-minute")) el("nginx-range-to-minute").value = "59";
+  if (el("nginx-range-to-hour")) el("nginx-range-to-hour").value = "";
+  if (el("nginx-range-to-minute")) el("nginx-range-to-minute").value = "";
   nginxPage = 0;
   loadNginxLogs();
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
-let chartVol = null, chartSev = null;
+let chartVol = null, chartSev = null, chartLogsMini = null;
+
+function analyticsGridColor() {
+  return document.documentElement.dataset.theme === "dark" ? "#1e293b" : "#e2e8f0";
+}
+
 async function loadAnalytics() {
   if (!window.Chart) return;
+  const hours = parseInt(el("analytics-hours-select")?.value || "24", 10);
+  const interval = hours >= 168 ? "toStartOfDay" : hours >= 24 ? "toStartOfHour" : "toStartOfHour";
   const cidFilter = state.selectedStack && state.stackNames.length > 0
-    ? `AND container_name IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})`
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
     : "";
+  const section = el("analytics-section");
+  section.classList.add("analytics-loading");
   try {
     const volData = await apiQuery(`
-      SELECT toStartOfHour(timestamp) as t, count(), countIf(level='error'), countIf(level='warn' OR level='warning')
-      FROM container_logs WHERE timestamp > now() - INTERVAL 24 HOUR ${cidFilter}
+      SELECT ${interval}(Timestamp) as t, count(), countIf(lower(SeverityText)='error'), countIf(lower(SeverityText)='warn' OR lower(SeverityText)='warning')
+      FROM observability.otel_logs_local WHERE Timestamp > now() - INTERVAL ${hours} HOUR AND ServiceName != 'nginx' ${cidFilter}
       GROUP BY t ORDER BY t ASC
     `);
+    const labelFmt = hours <= 24
+      ? { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false }
+      : { timeZone: "Asia/Bangkok", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false };
     const labels = volData.map(r => {
       const s = String(r[0]);
-      const d = new Date(s.includes("T") ? s : s.replace(" ", "T") + "Z");
-      return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Bangkok", hour: "2-digit", hour12: false }).format(d) + ":00";
+      const d = new Date(s.includes("T") ? s : s.replace(" ", "T"));
+      return new Intl.DateTimeFormat("sv-SE", labelFmt).format(d);
     });
     if (chartVol) chartVol.destroy();
     Chart.defaults.color = "#64748b"; Chart.defaults.font.family = "'Inter', sans-serif";
+    const gc = analyticsGridColor();
     chartVol = new Chart(el("chart-volume"), {
       type: "line",
       data: {
@@ -993,26 +1601,244 @@ async function loadAnalytics() {
       },
       options: {
         responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
-        scales: { y: { beginAtZero: true, grid: { color: "#e2e8f0" } }, x: { grid: { display: false } } }
+        scales: {
+          y: { beginAtZero: true, grid: { color: gc } },
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 45, autoSkip: true } }
+        },
+        onClick: async (evt, elements) => {
+          if (!elements.length) return;
+          const idx = elements[0].index;
+          const raw = String(volData[idx][0]);
+          const dt = raw.replace(" ", "T").slice(0, 13);
+          const fromDate = dt + ":00:00";
+          const toDate = dt + ":59:59";
+          const label = `${dt.slice(0, 10)} ${dt.slice(11, 13)}:00`;
+          
+          // Set hour filter
+          state.analyticsHourFilter = { fromDate, toDate, label };
+          state.analyticsLevelFilter = null;
+          
+          // Update donut for this hour
+          await updateSeverityDonut(fromDate, toDate);
+          // Show sample logs
+          loadAnalyticsSampleLogs();
+        }
       }
     });
-    const sevData = await apiQuery(`
-      SELECT if(level='','unknown',level) as lvl, count() as c FROM container_logs
-      WHERE timestamp > now() - INTERVAL 24 HOUR ${cidFilter} GROUP BY lvl ORDER BY c DESC
+
+    // Initial donut (full range) or filtered
+    if (state.analyticsHourFilter) {
+      await updateSeverityDonut(state.analyticsHourFilter.fromDate, state.analyticsHourFilter.toDate);
+    } else {
+      const sevData = await apiQuery(`
+        SELECT if(SeverityText='','unknown',lower(SeverityText)) as lvl, count() as c
+        FROM observability.otel_logs_local
+        WHERE Timestamp > now() - INTERVAL ${hours} HOUR AND ServiceName != 'nginx' ${cidFilter}
+        GROUP BY lvl ORDER BY c DESC
+      `);
+      renderSeverityDonut(sevData, null);
+    }
+    
+    // Load sample logs
+    loadAnalyticsSampleLogs();
+
+  } catch (e) {
+    console.error("Analytics error:", e);
+  } finally {
+    section.classList.remove("analytics-loading");
+  }
+}
+
+async function updateSeverityDonut(fromDate, toDate) {
+  const cidFilter = state.selectedStack && state.stackNames.length > 0
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
+    : "";
+  const fromTs = fromDate.replace("T", " ");
+  const toTs = toDate.replace("T", " ");
+  
+  const sevData = await apiQuery(`
+    SELECT if(SeverityText='','unknown',lower(SeverityText)) as lvl, count() as c
+    FROM observability.otel_logs_local
+    WHERE Timestamp >= '${fromTs}' AND Timestamp < '${toTs}' AND ServiceName != 'nginx' ${cidFilter}
+    GROUP BY lvl ORDER BY c DESC
+  `);
+  renderSeverityDonut(sevData, { fromDate, toDate });
+}
+
+function renderSeverityDonut(sevData, hourFilter) {
+  if (chartSev) chartSev.destroy();
+  const sLabels = sevData.map(r => r[0]);
+  const bgColors = sLabels.map(l => {
+    l = String(l).toLowerCase();
+    if (l === "error") return "#e11d48"; if (l === "warn" || l === "warning") return "#d97706";
+    if (l === "info") return "#0ea5e9"; if (l === "debug") return "#7c3aed"; return "#94a3b8";
+  });
+  chartSev = new Chart(el("chart-severity"), {
+    type: "doughnut",
+    data: { labels: sLabels, datasets: [{ data: sevData.map(r => r[1]), backgroundColor: bgColors, borderWidth: 0, hoverOffset: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: "65%",
+      plugins: { legend: { position: "right" } },
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const lvl = String(sLabels[elements[0].index]).toLowerCase();
+        state.analyticsLevelFilter = lvl;
+        loadAnalyticsSampleLogs();
+      }
+    }
+  });
+}
+
+async function loadAnalyticsSampleLogs() {
+  const panel = el("analytics-detail");
+  const titleEl = el("analytics-detail-title");
+  const logsBody = el("analytics-detail-logs");
+  
+  let fromDate, toDate;
+  if (state.analyticsHourFilter) {
+    fromDate = state.analyticsHourFilter.fromDate;
+    toDate = state.analyticsHourFilter.toDate;
+    titleEl.textContent = `📅 ${state.analyticsHourFilter.label}`;
+  } else {
+    const hours = parseFloat(el("analytics-hours-select")?.value || 24);
+    fromDate = null;
+    toDate = null;
+    titleEl.textContent = `Sample Logs (Last ${hours}h)`;
+  }
+  
+  panel.classList.remove("hidden");
+  
+  const cidFilter = state.selectedStack && state.stackNames.length > 0
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
+    : "";
+  const lvlFilter = state.analyticsLevelFilter ? `AND lower(SeverityText)='${state.analyticsLevelFilter}'` : "";
+  
+  let whereClause;
+  if (fromDate && toDate) {
+    const fromTs = fromDate.replace("T", " ");
+    const toTs = toDate.replace("T", " ");
+    whereClause = `Timestamp >= '${fromTs}' AND Timestamp < '${toTs}'`;
+  } else {
+    const hours = parseFloat(el("analytics-hours-select")?.value || 24);
+    whereClause = `Timestamp > now() - INTERVAL ${hours} HOUR`;
+  }
+  
+  try {
+    const rows = await apiQuery(`
+      SELECT Timestamp, ServiceName, ContainerName, SeverityText, Body
+      FROM observability.otel_logs_local
+      WHERE ${whereClause} AND ServiceName != 'nginx' ${lvlFilter} ${cidFilter}
+      ORDER BY Timestamp DESC LIMIT 5
     `);
-    if (chartSev) chartSev.destroy();
-    const sLabels = sevData.map(r => r[0]);
-    const bgColors = sLabels.map(l => {
-      l = String(l).toLowerCase();
-      if (l === "error") return "#e11d48"; if (l === "warn" || l === "warning") return "#d97706";
-      if (l === "info") return "#0ea5e9"; if (l === "debug") return "#7c3aed"; return "#94a3b8";
-    });
-    chartSev = new Chart(el("chart-severity"), {
-      type: "doughnut",
-      data: { labels: sLabels, datasets: [{ data: sevData.map(r => r[1]), backgroundColor: bgColors, borderWidth: 0, hoverOffset: 4 }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: "65%", plugins: { legend: { position: "right" } } }
-    });
-  } catch (e) { console.error("Analytics error:", e); }
+    
+    if (!rows.length) {
+      logsBody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">No logs found.</td></tr>`;
+      return;
+    }
+    
+    logsBody.innerHTML = rows.map(([ts, svc, cname, lvl, body]) => {
+      const lvlLower = (lvl || "").toLowerCase();
+      const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvlLower] || "badge-other";
+      const displayName = containerAliases[cname] || cname;
+      const msgPreview = String(body).slice(0, 80).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:11px;">${String(ts).slice(11, 19)}</td>
+        <td style="padding:8px; color:var(--text);">${escHtml(String(svc))}</td>
+        <td style="padding:8px; color:var(--text);">${escHtml(String(displayName))}</td>
+        <td style="padding:8px;"><span class="badge ${badgeCls}">${escHtml(lvlLower || "—")}</span></td>
+        <td style="padding:8px; color:var(--text-muted); font-size:11px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(String(body).slice(0, 200))}">${msgPreview}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    logsBody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function showAnalyticsDetail(fromDate, toDate, level, label) {
+  console.log("showAnalyticsDetail called:", fromDate, toDate, level, label);
+  state.analyticsDetail = { fromDate, toDate, level, label };
+  const panel = el("analytics-detail");
+  console.log("Panel element:", panel);
+  const titleEl = el("analytics-detail-title");
+  const logsBody = el("analytics-detail-logs");
+  
+  titleEl.textContent = `📅 ${label}`;
+  panel.classList.remove("hidden");
+  panel.style.display = "block";
+  console.log("Panel visible, classList:", panel.classList, "display:", panel.style.display);
+  
+  const fromTs = fromDate.replace("T", " ");
+  const toTs = toDate.replace("T", " ");
+  const lvlFilter = level ? `AND lower(SeverityText)='${level}'` : "";
+  console.log("Query params:", fromTs, toTs, lvlFilter);
+  
+  try {
+    const rows = await apiQuery(`
+      SELECT Timestamp, ServiceName, ContainerName, SeverityText, Body
+      FROM observability.otel_logs_local
+      WHERE Timestamp >= '${fromTs}' AND Timestamp < '${toTs}' AND ServiceName != 'nginx' ${lvlFilter} ${state.selectedStack && state.stackNames.length > 0 ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})` : ""}
+      ORDER BY Timestamp DESC LIMIT 5
+    `);
+    console.log("Query returned rows:", rows.length, rows);
+    
+    if (!rows.length) {
+      logsBody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">No logs found for this period.</td></tr>`;
+      return;
+    }
+    
+    logsBody.innerHTML = rows.map(([ts, svc, cname, lvl, body]) => {
+      const lvlLower = (lvl || "").toLowerCase();
+      const badgeCls = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" }[lvlLower] || "badge-other";
+      const displayName = containerAliases[cname] || cname;
+      const msgPreview = String(body).slice(0, 80).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:11px;">${String(ts).slice(11, 19)}</td>
+        <td style="padding:8px; color:var(--text);">${escHtml(String(svc))}</td>
+        <td style="padding:8px; color:var(--text);">${escHtml(String(displayName))}</td>
+        <td style="padding:8px;"><span class="badge ${badgeCls}">${escHtml(lvlLower || "—")}</span></td>
+        <td style="padding:8px; color:var(--text-muted); font-size:11px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(String(body).slice(0, 200))}">${msgPreview}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    logsBody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">Error loading logs: ${e.message}</td></tr>`;
+  }
+}
+
+function hideAnalyticsDetail() {
+  state.analyticsDetail = null;
+  state.analyticsHourFilter = null;
+  state.analyticsLevelFilter = null;
+  el("analytics-detail").classList.add("hidden");
+}
+
+async function loadLogsMiniChart() {
+  if (!window.Chart || !el("chart-logs-mini")) return;
+  const where = buildWhere();
+  const rows = await apiQuery(
+    `SELECT toStartOfHour(Timestamp) as h, count() as cnt
+     FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx'
+     GROUP BY h ORDER BY h`
+  );
+  const labels = rows.map(r => String(r[0]).slice(0, 13)); // "YYYY-MM-DD HH"
+  const counts = rows.map(r => parseInt(r[1], 10));
+  if (chartLogsMini) chartLogsMini.destroy();
+  chartLogsMini = new Chart(el("chart-logs-mini"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: counts, backgroundColor: "rgba(79,70,229,0.45)", borderRadius: 2, hoverBackgroundColor: "rgba(79,70,229,0.8)" }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { title: (i) => i[0].label + ":00", label: (i) => ` ${i.raw} logs` } }
+      },
+      scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const h = labels[elements[0].index]; // "YYYY-MM-DD HH"
+        _drillToLogs({ fromDate: h.replace(" ", "T") + ":00", toDate: h.replace(" ", "T") + ":59" });
+      }
+    }
+  });
 }
 
 // ── Clear DB Modal ────────────────────────────────────────────────────────────
@@ -1025,17 +1851,17 @@ function closeClearModal() { el("modal-overlay").classList.add("hidden"); }
 function updateModalPreview() {
   const val = document.querySelector('input[name="clear-range"]:checked')?.value || "90";
   let sql;
-  if (val === "all") sql = `TRUNCATE TABLE logs.container_logs`;
-  else if (val === "7" || val === "30") sql = `ALTER TABLE logs.container_logs DELETE\n  WHERE timestamp < now() - INTERVAL ${val} DAY`;
-  else { const d = new Date(); d.setDate(d.getDate() - 90); sql = `ALTER TABLE logs.container_logs\n  DROP PARTITION '${d.toISOString().slice(0, 7).replace("-", "")}'`; }
+  if (val === "all") sql = `TRUNCATE TABLE observability.otel_logs_local`;
+  else if (val === "7" || val === "30") sql = `ALTER TABLE observability.otel_logs_local DELETE\n  WHERE Timestamp < now() - INTERVAL ${val} DAY AND ServiceName != 'nginx'`;
+  else { sql = `ALTER TABLE observability.otel_logs_local DELETE\n  WHERE Timestamp < now() - INTERVAL 90 DAY AND ServiceName != 'nginx'`; }
   el("modal-query-preview").textContent = sql;
 }
 async function executeClear() {
   const val = document.querySelector('input[name="clear-range"]:checked')?.value || "90";
   let sql;
-  if (val === "all") sql = `TRUNCATE TABLE logs.container_logs`;
-  else if (val === "7" || val === "30") sql = `ALTER TABLE logs.container_logs DELETE WHERE timestamp < now() - INTERVAL ${parseInt(val, 10)} DAY`;
-  else { const d = new Date(); d.setDate(d.getDate() - 90); sql = `ALTER TABLE logs.container_logs DROP PARTITION '${d.toISOString().slice(0, 7).replace("-", "")}'`; }
+  if (val === "all") sql = `TRUNCATE TABLE observability.otel_logs_local`;
+  else if (val === "7" || val === "30") sql = `ALTER TABLE observability.otel_logs_local DELETE WHERE Timestamp < now() - INTERVAL ${parseInt(val, 10)} DAY AND ServiceName != 'nginx'`;
+  else { sql = `ALTER TABLE observability.otel_logs_local DELETE WHERE Timestamp < now() - INTERVAL 90 DAY AND ServiceName != 'nginx'`; }
   try {
     el("btn-modal-confirm").disabled = true; el("btn-modal-confirm").textContent = "Deleting…";
     await apiExec(sql);
@@ -1140,8 +1966,10 @@ document.addEventListener("click", e => {
 
 el("export-all-time").addEventListener("change", () => {
   const checked = el("export-all-time").checked;
-  el("export-from").disabled = checked;
-  el("export-to").disabled = checked;
+  ["export-from-date", "export-from-hour", "export-from-minute",
+    "export-to-date", "export-to-hour", "export-to-minute"].forEach(id => {
+      const el2 = el(id); if (el2) el2.disabled = checked;
+    });
 });
 
 el("btn-export-confirm").addEventListener("click", async () => {
@@ -1163,20 +1991,36 @@ el("btn-export-confirm").addEventListener("click", async () => {
 
   btn.disabled = true;
   btn.textContent = "Preparing…";
-  status.textContent = "⏳ Generating export from ClickHouse…";
+  status.textContent = "⏳ Generating export…";
   status.className = "export-status";
   status.classList.remove("hidden");
 
-  // Using direct location change for standard browser download handling
-  // This is better for large files and works well since we use cookies for auth
-  const downloadUrl = `${API_BASE}/export?${params.toString()}`;
-  window.location.href = downloadUrl;
-
-  status.textContent = "✅ Download started (check your browser downloads)";
-  status.classList.add("success");
-  setTimeout(() => el("export-overlay").classList.add("hidden"), 3000);
-  btn.disabled = false;
-  btn.textContent = "⬇ Download JSV";
+  try {
+    const res = await fetch(`${API_BASE}/export?${params.toString()}`, { credentials: "include" });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${txt.slice(0, 200)}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const fname = cd.match(/filename="([^"]+)"/)?.[1] || `logs_${Date.now()}.jsv`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    status.textContent = "✅ Download started";
+    status.classList.add("success");
+    setTimeout(() => el("export-overlay").classList.add("hidden"), 3000);
+  } catch (e) {
+    status.textContent = "❌ Export failed: " + e.message;
+    status.style.color = "var(--error)";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "⬇ Download JSV";
+  }
 });
 
 el("btn-export-cancel").addEventListener("click", () => el("export-overlay").classList.add("hidden"));
@@ -1296,6 +2140,7 @@ el("btn-mark-read").addEventListener("click", async () => {
 // ── Admin Panel ───────────────────────────────────────────────────────────────
 async function loadAdminPanel() {
   await Promise.all([loadUserList(), loadOwnershipList()]);
+  refreshBackupState();
 }
 
 async function loadUserList(q = "") {
@@ -1304,6 +2149,8 @@ async function loadUserList(q = "") {
     if (!res.ok) return;
     const users = await res.json();
     const list = el("user-list");
+    const badge = el("user-count-badge");
+    if (badge) badge.textContent = users.length;
     if (!users.length) { list.innerHTML = `<div class="admin-empty">No users found</div>`; return; }
 
     // Also populate assign dropdown
@@ -1522,25 +2369,6 @@ async function loadSettings() {
   } catch { }
 }
 
-document.querySelectorAll(".btn-save-setting").forEach(btn => {
-  btn.addEventListener("click", async () => {
-    const key = btn.dataset.key;
-    const val = el(btn.dataset.src).value;
-    try {
-      await fetch(`${API_BASE}/settings`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, value: val }),
-      });
-      btn.textContent = "✓";
-      setTimeout(() => btn.textContent = "Save", 1500);
-      // Update local state
-      state.settings[key] = val;
-      if (key === "active_color_green") document.documentElement.style.setProperty("--success", val);
-    } catch { btn.textContent = "❌"; }
-  });
-});
-
 // ── Settings ──────────────────────────────────────────────────────────────────
 document.querySelectorAll(".btn-save-setting").forEach(btn => {
   btn.addEventListener("click", async () => {
@@ -1567,10 +2395,13 @@ el("tab-logs").addEventListener("click", () => {
   el("tab-analytics").classList.remove("active");
   el("tab-admin").classList.remove("active");
   el("tab-nginx").classList.remove("active");
+  el("tab-patterns")?.classList.remove("active");
   el("logs-view-wrapper").classList.remove("hidden");
   el("analytics-section").classList.add("hidden");
   el("admin-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
+  el("patterns-section")?.classList.add("hidden");
+  hideAnalyticsDetail();
   stopNginxSSE();
   startLogsSSE();
 });
@@ -1581,10 +2412,25 @@ el("tab-analytics").addEventListener("click", () => {
   el("tab-logs").classList.remove("active");
   el("tab-admin").classList.remove("active");
   el("tab-nginx").classList.remove("active");
+  el("tab-patterns")?.classList.remove("active");
   el("analytics-section").classList.remove("hidden");
   el("logs-view-wrapper").classList.add("hidden");
   el("admin-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
+  el("patterns-section")?.classList.add("hidden");
+  
+  // Restore panel if there were pending filters from "View Full Logs"
+  if (state.analyticsPendingViewLogs) {
+    if (state.analyticsPendingViewLogs.fromDate) {
+      state.analyticsHourFilter = {
+        fromDate: state.analyticsPendingViewLogs.fromDate,
+        toDate: state.analyticsPendingViewLogs.toDate,
+        label: state.analyticsPendingViewLogs.fromDate.replace("T", " ").slice(0, 13) + ":00"
+      };
+    }
+    state.analyticsLevelFilter = state.analyticsPendingViewLogs.level || null;
+  }
+  
   loadAnalytics();
   stopLogsSSE();
 });
@@ -1595,10 +2441,12 @@ el("tab-admin").addEventListener("click", () => {
   el("tab-logs").classList.remove("active");
   el("tab-analytics").classList.remove("active");
   el("tab-nginx").classList.remove("active");
+  el("tab-patterns")?.classList.remove("active");
   el("admin-section").classList.remove("hidden");
   el("logs-view-wrapper").classList.add("hidden");
   el("analytics-section").classList.add("hidden");
   el("nginx-view-wrapper").classList.add("hidden");
+  el("patterns-section")?.classList.add("hidden");
   loadAdminPanel();
   stopNginxSSE();
   stopLogsSSE();
@@ -1610,15 +2458,83 @@ el("tab-nginx").addEventListener("click", () => {
   el("tab-logs").classList.remove("active");
   el("tab-analytics").classList.remove("active");
   el("tab-admin").classList.remove("active");
+  el("tab-patterns")?.classList.remove("active");
   el("nginx-view-wrapper").classList.remove("hidden");
   el("logs-view-wrapper").classList.add("hidden");
   el("analytics-section").classList.add("hidden");
-  loadNginxAnalytics();
   el("admin-section").classList.add("hidden");
+  el("patterns-section")?.classList.add("hidden");
+  hideAnalyticsDetail();
+  loadNginxAnalytics();
   startNginxSSE();
   loadNginxLogs();
   stopLogsSSE();
 });
+
+el("tab-patterns")?.addEventListener("click", () => {
+  state.view = "patterns";
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  el("tab-patterns").classList.add("active");
+  ["logs-view-wrapper", "analytics-section", "admin-section", "nginx-view-wrapper"].forEach(id => {
+    el(id)?.classList.add("hidden");
+  });
+  el("patterns-section").classList.remove("hidden");
+  hideAnalyticsDetail();
+  stopLogsSSE();
+  stopNginxSSE();
+  loadPatterns();
+});
+
+// ── Log Pattern Clustering (Phase 14) ─────────────────────────────────────────
+async function loadPatterns() {
+  const minutes = parseInt(el("patterns-minutes")?.value || "60", 10);
+  const container = state.stackNames.length === 1 ? state.stackNames[0] : "";
+  const statusEl = el("patterns-status");
+  const tbody = el("patterns-body");
+  if (statusEl) statusEl.textContent = "Loading…";
+  tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Loading…</td></tr>`;
+  try {
+    const params = new URLSearchParams({ minutes, ...(container ? { container } : {}) });
+    const data = await fetch(`/logstore/api/logs/patterns?${params}`).then(r => r.json());
+    const rows = data.rows || [];
+    if (statusEl) statusEl.textContent = `${rows.length} pattern${rows.length !== 1 ? "s" : ""} · last ${minutes} min${container ? ` · ${container}` : ""}`;
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No patterns found.</td></tr>`;
+      return;
+    }
+    const badgeMap = { error: "badge-error", warn: "badge-warn", warning: "badge-warn", info: "badge-info", debug: "badge-debug" };
+    tbody.innerHTML = rows.map(([pattern, freq, first, last, sev]) => {
+      const l = (sev || "").toLowerCase();
+      const cls = l === "error" ? "row-error" : (l === "warn" || l === "warning") ? "row-warn" : "";
+      const badgeCls = badgeMap[l] || "badge-other";
+      const displayPattern = escHtml(pattern).replace(/\?+/g, '<span style="color:var(--text-muted);opacity:0.5">?</span>');
+      return `<tr class="${cls} pattern-row" data-pattern="${escHtml(pattern)}" style="cursor:pointer;" title="Click to filter logs by this pattern">
+        <td style="text-align:center;"><span style="font-weight:700;font-family:var(--mono);color:var(--accent);font-size:13px;">${escHtml(String(freq))}</span></td>
+        <td><span class="badge ${badgeCls}">${escHtml(sev || "—")}</span></td>
+        <td class="td-msg pattern-cell" style="max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(pattern)}">${displayPattern}</td>
+        <td class="td-ts">${formatTs(first)}</td>
+        <td class="td-ts">${formatTs(last)}</td>
+      </tr>`;
+    }).join("");
+    tbody.querySelectorAll(".pattern-row").forEach(row => {
+      row.addEventListener("click", () => {
+        // Extract literal (non-?) tokens that contain at least one letter
+        const tokens = row.dataset.pattern
+          .split(/[\s?]+/)
+          .filter(t => /[a-zA-Z]/.test(t) && t.length >= 2);
+        const raw = tokens.slice(0, 4).join(" ").trim();
+        const searchEl = el("search-input");
+        if (searchEl) searchEl.value = raw;
+        state.search = raw;
+        state.page = 0;
+        el("tab-logs").click();
+      });
+    });
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "Error: " + e.message;
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Failed to load patterns.</td></tr>`;
+  }
+}
 
 // ── Tooltip helpers ───────────────────────────────────────────────────────────
 function _ensureStackTooltip() {
@@ -1657,6 +2573,93 @@ el("btn-new-stack").addEventListener("click", () => {
   }
 });
 
+// ── Backup Poll (Phase 15) ─────────────────────────────────────────────────────
+function startBackupPoll() {
+  const backupBtn = el("btn-trigger-backup");
+  const clearBtn = el("btn-clear-db");
+  const banner = el("backup-status-banner");
+  const started = Date.now();
+
+  function elapsed() {
+    const s = Math.floor((Date.now() - started) / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  if (backupBtn) { backupBtn.disabled = true; backupBtn.textContent = "⏳ Backup running…"; }
+  if (clearBtn) { clearBtn.disabled = true; clearBtn.textContent = "Backup in progress — wait"; }
+  if (banner) { banner.className = "backup-banner in-progress"; banner.textContent = "⏳ Backup in progress…"; }
+
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/admin/backup/status`, { credentials: "include" }).then(x => x.json());
+      if (r.running) {
+        if (banner) banner.textContent = `⏳ Backup running… (${elapsed()})`;
+        return;
+      }
+      clearInterval(poll);
+      if (backupBtn) { backupBtn.disabled = false; backupBtn.textContent = "🚀 Start Backup"; }
+      if (clearBtn) { clearBtn.disabled = false; clearBtn.textContent = "🗑 Clear DB"; }
+      const ok = r.last_run?.status === "success";
+      if (banner) {
+        banner.className = ok ? "backup-banner success" : "backup-banner error";
+        banner.textContent = ok
+          ? `✅ Backup complete · Cleared ${(r.last_run.cleared_rows || 0).toLocaleString()} rows`
+          : `❌ Backup failed: ${r.last_run?.error_message || "unknown error"}`;
+        if (ok) setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
+        loadBackupHistory();
+      }
+    } catch { /* network blip — keep polling */ }
+  }, 3000);
+}
+
+async function refreshBackupState() {
+  try {
+    const r = await fetch(`${API_BASE}/admin/backup/status`, { credentials: "include" }).then(x => x.json());
+    if (r.running) {
+      const clearBtn = el("btn-clear-db");
+      const backupBtn = el("btn-trigger-backup");
+      if (clearBtn) { clearBtn.disabled = true; clearBtn.textContent = "Backup in progress — wait"; }
+      if (backupBtn) { backupBtn.disabled = true; backupBtn.textContent = "⏳ Backup running…"; }
+      startBackupPoll();
+    }
+  } catch { /* ignore */ }
+  loadBackupHistory();
+}
+
+async function loadBackupHistory() {
+  const tbody = el("backup-history-body");
+  if (!tbody) return;
+  try {
+    const rows = await fetch(`${API_BASE}/admin/backup/history`, { credentials: "include" }).then(r => r.json());
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">No backups yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map((r, i) => {
+      const ok = r.status === "success";
+      const running = r.status === "running";
+      const statusColor = ok ? "var(--accent)" : running ? "var(--warn)" : "var(--error)";
+      const statusIcon = ok ? "✓" : running ? "◐" : "✕";
+      const isNew = state.lastBackupId && r.id > state.lastBackupId;
+      const rowClass = isNew ? "backup-row-new" : "";
+      if (r.id > (state.lastBackupId || 0)) state.lastBackupId = r.id;
+      return `<tr class="${rowClass}" style="border-bottom:1px solid var(--border);">
+        <td style="padding:4px 6px; text-align:right; color:var(--text-muted);">${r.id}</td>
+        <td style="padding:4px 6px; color:var(--text-dim);">${r.started_at ? formatTs(r.started_at).slice(11, 19) : "—"}</td>
+        <td style="padding:4px 6px; color:var(--text-muted);">${r.finished_at ? formatTs(r.finished_at).slice(11, 19) : "—"}</td>
+        <td style="padding:4px 6px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(r.databases)}">${escHtml(r.databases)}</td>
+        <td style="padding:4px 6px;">
+          <span style="font-size:10px; font-weight:600; color:${statusColor};">${statusIcon} ${escHtml(r.status)}</span>
+          ${r.error_message ? `<div style="font-size:9px; color:var(--error); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(r.error_message)}</div>` : ""}
+          ${ok && r.cleared_rows ? `<div style="font-size:9px; color:var(--text-muted);">${Number(r.cleared_rows).toLocaleString()} rows</div>` : ""}
+        </td>
+      </tr>`;
+    }).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="padding:12px; text-align:center; color:var(--error);">Failed to load</td></tr>`;
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   try {
@@ -1685,8 +2688,8 @@ function init() {
     });
 
     // Theme
-    const savedTheme = localStorage.getItem("theme") || "light";
-    if (savedTheme === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    const savedTheme = localStorage.getItem("theme") || "dark";
+    document.documentElement.setAttribute("data-theme", savedTheme);
     const btnTheme = el("btn-theme");
     if (btnTheme) {
       btnTheme.textContent = savedTheme === "dark" ? "☀️" : "🌙";
@@ -1702,23 +2705,26 @@ function init() {
     const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
     const mins = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"));
 
+    const hourOpts = `<option value="">HH</option>` + hours.map(v => `<option value="${v}">${v}</option>`).join("");
+    const minOpts = `<option value="">MM</option>` + mins.map(v => `<option value="${v}">${v}</option>`).join("");
+
     ["range-from-hour", "range-to-hour", "export-from-hour", "export-to-hour"].forEach(id => {
       const target = el(id);
-      if (target) target.innerHTML = hours.map(v => `<option value="${v}">${v}</option>`).join("");
+      if (target) target.innerHTML = hourOpts;
     });
     ["range-from-minute", "range-to-minute", "export-from-minute", "export-to-minute"].forEach(id => {
       const target = el(id);
-      if (target) target.innerHTML = mins.map(v => `<option value="${v}">${v}</option>`).join("");
+      if (target) target.innerHTML = minOpts;
     });
 
     // Nginx time selects
     ["nginx-range-from-hour", "nginx-range-to-hour"].forEach(id => {
       const target = el(id);
-      if (target) target.innerHTML = hours.map(v => `<option value="${v}">${v}</option>`).join("");
+      if (target) target.innerHTML = hourOpts;
     });
     ["nginx-range-from-minute", "nginx-range-to-minute"].forEach(id => {
       const target = el(id);
-      if (target) target.innerHTML = mins.map(v => `<option value="${v}">${v}</option>`).join("");
+      if (target) target.innerHTML = minOpts;
     });
 
     // Filter bar
@@ -1749,76 +2755,6 @@ function init() {
     });
     el("search-input").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-apply").click(); });
 
-    // Admin Panel listeners (User search, etc.)
-    const userSearch = el("user-search");
-    if (userSearch) {
-      userSearch.addEventListener("input", (e) => {
-        loadUserList(e.target.value.trim());
-      });
-    }
-
-    // Container Assignment search
-    const assignSearch = el("container-assign-search");
-    if (assignSearch) {
-      assignSearch.addEventListener("input", () => {
-        const q = assignSearch.value.toLowerCase().trim();
-        const results = el("assign-container-results");
-        if (!q) { results.classList.add("hidden"); return; }
-
-        const matches = [];
-        lastSidebarRows.forEach(([cname]) => {
-          if (cname.toLowerCase().includes(q))
-            matches.push({ id: cname, label: cname });
-        });
-
-        if (!matches.length) { results.innerHTML = `<div class="export-no-result">No containers found</div>`; results.classList.remove("hidden"); return; }
-
-        results.innerHTML = "";
-        matches.slice(0, 10).forEach(m => {
-          const item = document.createElement("div");
-          item.className = "export-result-item";
-          item.textContent = m.label;
-          item.addEventListener("click", () => {
-            if (!assignSelectedContainers.find(c => c.id === m.id)) {
-              assignSelectedContainers.push(m);
-              renderAssignTags();
-              el("btn-assign-container").disabled = false;
-            }
-            assignSearch.value = "";
-            results.classList.add("hidden");
-          });
-          results.appendChild(item);
-        });
-        results.classList.remove("hidden");
-      });
-    }
-
-    el("btn-assign-container").addEventListener("click", async () => {
-      const uid = el("assign-user-select").value;
-      if (!uid || !assignSelectedContainers.length) return;
-      const btn = el("btn-assign-container");
-      btn.disabled = true; btn.textContent = "Assigning…";
-      try {
-        for (const c of assignSelectedContainers) {
-          await fetch(`${API_BASE}/admin/containers/assign?container_name=${encodeURIComponent(c.id)}&user_id=${uid}`, {
-            method: "POST", credentials: "include"
-          });
-        }
-        assignSelectedContainers = [];
-        renderAssignTags();
-        loadOwnershipList();
-        btn.textContent = "✓ Assigned";
-      } catch { btn.textContent = "❌ Error"; }
-      finally {
-        setTimeout(() => { btn.disabled = false; btn.textContent = "Assign"; }, 2000);
-      }
-    });
-
-    document.addEventListener("click", e => {
-      if (!e.target.closest("#container-assign-search") && !e.target.closest("#assign-container-results"))
-        el("assign-container-results").classList.add("hidden");
-    });
-
     // Pagination
     el("btn-prev").addEventListener("click", () => { stopLogsSSE(); state.page--; startLogsSSE(); loadLogs(); });
     el("btn-next").addEventListener("click", () => { stopLogsSSE(); state.page++; loadLogs(); });
@@ -1829,74 +2765,69 @@ function init() {
     el("btn-nginx-refresh")?.addEventListener("click", () => { stopNginxSSE(); startNginxSSE(); loadNginxLogs(); });
     el("btn-nginx-prev")?.addEventListener("click", () => { stopNginxSSE(); nginxPage--; loadNginxLogs(); });
     el("btn-nginx-next")?.addEventListener("click", () => { stopNginxSSE(); nginxPage++; loadNginxLogs(); });
+    // Analytics controls
+    el("analytics-hours-select")?.addEventListener("change", () => { 
+      hideAnalyticsDetail(); 
+      state.analyticsHourFilter = null;
+      state.analyticsLevelFilter = null;
+      if (state.view === "analytics") loadAnalytics(); 
+    });
+    el("btn-analytics-refresh")?.addEventListener("click", () => { 
+      state.analyticsHourFilter = null; 
+      state.analyticsLevelFilter = null; 
+      state.analyticsPendingViewLogs = null;
+      hideAnalyticsDetail();
+      loadAnalytics(); 
+    });
+    el("btn-analytics-detail-close")?.addEventListener("click", hideAnalyticsDetail);
+    el("btn-view-full-logs")?.addEventListener("click", () => {
+      const fromDate = state.analyticsHourFilter?.fromDate || null;
+      const toDate = state.analyticsHourFilter?.toDate || null;
+      const level = state.analyticsLevelFilter || "";
+      state.analyticsPendingViewLogs = { fromDate, toDate, level };
+      _drillToLogs({ 
+        fromDate: fromDate, 
+        toDate: toDate, 
+        level: level 
+      });
+    });
     // Nginx analytics controls
     el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseFloat(e.target.value); loadNginxAnalytics(); });
     el("btn-nginx-analytics-refresh")?.addEventListener("click", loadNginxAnalytics);
 
     // Refresh
     el("btn-refresh").addEventListener("click", refresh);
+    el("btn-patterns-load")?.addEventListener("click", loadPatterns);
 
     // Clear DB (admin only)
     el("btn-clear-db").addEventListener("click", openClearModal);
+    el("btn-clear-db-admin")?.addEventListener("click", openClearModal);
     el("btn-modal-cancel").addEventListener("click", closeClearModal);
     el("btn-modal-confirm").addEventListener("click", executeClear);
     document.querySelectorAll('input[name="clear-range"]').forEach(r => r.addEventListener("change", updateModalPreview));
     el("modal-overlay").addEventListener("click", e => { if (e.target === el("modal-overlay")) closeClearModal(); });
+
+    // Backup history refresh
+    el("btn-backup-history-refresh")?.addEventListener("click", loadBackupHistory);
 
     // Backup button
     const backupBtn = el("btn-trigger-backup");
     if (backupBtn) {
       backupBtn.addEventListener("click", async () => {
         if (!confirm("คุณต้องการเริ่มกระบวนการ Backup ทันทีหรือไม่?\n(PostgreSQL + ClickHouse)")) return;
-
-        const clearBtn = el("btn-clear-db");
-        const banner = el("backup-status-banner");
-
-        backupBtn.disabled = true;
-        backupBtn.textContent = "⏳ Processing...";
-        if (clearBtn) clearBtn.disabled = true;
-        if (banner) {
-          banner.className = "backup-banner in-progress";
-          banner.textContent = "⏳ Backup in process... Please wait.";
-        }
-
         try {
-          const res = await fetch(`${API_BASE}/admin/backup/trigger`, {
-            method: "POST",
-            credentials: "include"
-          });
-          if (res.ok) {
-            if (banner) {
-              banner.className = "backup-banner success";
-              banner.textContent = "✅ Backup completed successfully! Files saved to /mnt.";
-              setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
-            }
-            addNotification({
-              id: `backup-${Date.now()}`,
-              type: "info",
-              message: "✅ Backup completed successfully (PostgreSQL + ClickHouse)",
-              timestamp: new Date().toISOString()
-            });
-            if (clearBtn) clearBtn.disabled = false;
-          } else {
-            const data = await res.json().catch(() => ({}));
-            if (banner) {
-              banner.className = "backup-banner error";
-              banner.textContent = `❌ Backup failed: ${data.detail || "Unknown error"}`;
-              setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
-            }
+          const res = await fetch(`${API_BASE}/admin/backup/trigger`, { method: "POST", credentials: "include" });
+          if (res.status === 409) { alert("Backup already running — check status banner."); return; }
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || res.statusText);
           }
         } catch (err) {
-          if (banner) {
-            banner.className = "backup-banner error";
-            banner.textContent = `❌ Error connecting to server: ${err.message}`;
-            setTimeout(() => { banner.className = "backup-banner hidden"; }, 8000);
-          }
-          if (clearBtn) clearBtn.disabled = false;
-        } finally {
-          backupBtn.disabled = false;
-          backupBtn.textContent = "🚀 Start Backup";
+          const banner = el("backup-status-banner");
+          if (banner) { banner.className = "backup-banner error"; banner.textContent = "❌ Failed to start: " + err.message; }
+          return;
         }
+        startBackupPoll();
       });
     }
 

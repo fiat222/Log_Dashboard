@@ -4,7 +4,7 @@ backend/main.py — Log Dashboard FastAPI Backend
 Handles:
   - Super admin login via username/password from .env
   - PSU SSO (Authentik OAuth2) — prepared, needs Authentik credentials
-  - JWT session management (stateless, stored in httpOnly cookie)
+  - Redis session management (30-day sliding TTL, device fingerprint check)
   - Role-based ClickHouse proxy (read + write)
   - Container ownership management (PostgreSQL)
   - Critical notification SSE endpoint
@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
@@ -30,7 +31,6 @@ from fastapi import (Cookie, Depends, FastAPI, HTTPException, Query, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
                                 StreamingResponse)
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 import redis.asyncio as redis_async
@@ -39,9 +39,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-very-long-secret-key-here")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 2  # Reduced from 24 to 2 for better security
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() != "false"
+SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "30"))
+SESSION_TTL = SESSION_TTL_DAYS * 86400
 
 # Super admin credentials (from .env)
 SUPER_ADMIN_USERNAME = os.getenv("SUPER_ADMIN_USERNAME", "superadmin")
@@ -57,7 +57,7 @@ POSTGRES_URL = os.getenv(
 # ClickHouse
 CH_HOST = os.getenv("CLICKHOUSE_HOST", "clickhouse")
 CH_PORT = os.getenv("CLICKHOUSE_PORT", "8123")
-CH_DB   = os.getenv("CLICKHOUSE_DB", "logs")
+CH_DB   = os.getenv("CLICKHOUSE_DB", "observability")
 CH_USER = os.getenv("CLICKHOUSE_USER", "loguser")
 CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "changeme")
 
@@ -90,16 +90,37 @@ def check_super_admin(username: str, password: str) -> bool:
     return password == SUPER_ADMIN_PASSWORD_PLAIN
 
 
-# ── JWT ───────────────────────────────────────────────────────────────────────
-def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# ── Session helpers ───────────────────────────────────────────────────────────
+def compute_fingerprint(request: Request) -> dict:
+    ua = request.headers.get("user-agent", "")
+    lang = request.headers.get("accept-language", "")
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host or "")
+    net = ".".join(ip.split(".")[:3]) if "." in ip else ip
+    return {
+        "fp_ua":  hashlib.sha256(ua.encode()).hexdigest()[:16],
+        "fp_net": hashlib.sha256((net + lang).encode()).hexdigest()[:16],
+    }
 
 
-def decode_token(token: str) -> dict:
-    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+async def create_session(user_data: dict, fp: dict) -> str:
+    sid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {**user_data, **fp, "created_at": now, "last_seen_at": now}
+    await redis_client.setex(f"session:{sid}", SESSION_TTL, json.dumps(payload))
+    return sid
+
+
+async def get_session(sid: str) -> dict | None:
+    raw = await redis_client.get(f"session:{sid}")
+    if not raw:
+        return None
+    await redis_client.expire(f"session:{sid}", SESSION_TTL)
+    return json.loads(raw)
+
+
+async def delete_session(sid: str):
+    await redis_client.delete(f"session:{sid}")
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -163,6 +184,19 @@ INIT_STMTS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR",
     "ALTER TABLE container_ownership ADD COLUMN IF NOT EXISTS custom_name VARCHAR(255)",
+    """
+    CREATE TABLE IF NOT EXISTS backup_runs (
+        id            SERIAL PRIMARY KEY,
+        started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at   TIMESTAMPTZ,
+        status        TEXT NOT NULL CHECK (status IN ('running','success','failed')),
+        triggered_by  TEXT NOT NULL,
+        backup_file   TEXT,
+        cleared_rows  BIGINT,
+        error_message TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_backup_runs_started ON backup_runs(started_at DESC)",
 ]
 
 
@@ -259,11 +293,12 @@ async def check_critical_logs():
     """Query ClickHouse for critical logs in last 2 minutes, broadcast if found."""
     try:
         sql = (
-            "SELECT container_id, container_name, level, message, timestamp "
-            "FROM logs.container_logs "
-            "WHERE timestamp > now() - INTERVAL 2 MINUTE "
-            "AND (level = 'error' OR lower(message) LIKE '%error%' OR lower(message) LIKE '%fatal%') "
-            "ORDER BY timestamp DESC LIMIT 200 "
+            "SELECT ContainerId, ContainerName, SeverityText, Body, Timestamp "
+            "FROM observability.otel_logs_local "
+            "WHERE Timestamp > now() - INTERVAL 2 MINUTE "
+            "AND ServiceName != 'nginx' "
+            "AND (SeverityText = 'ERROR' OR lower(Body) LIKE '%error%' OR lower(Body) LIKE '%fatal%') "
+            "ORDER BY Timestamp DESC LIMIT 200 "
             "FORMAT JSONCompact"
         )
         url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -324,16 +359,17 @@ async def check_log_spam_anomalies():
         # - high repeated volume with network/DDOS keywords.
         sql = (
             "SELECT "
-            "container_id, "
-            "any(container_name) as container_name, "
-            "max(message) as sample_msg, "
+            "ContainerId, "
+            "any(ContainerName) as container_name, "
+            "max(Body) as sample_msg, "
             "count() as cnt, "
             "round(count() / 60.0, 2) as req_per_sec, "
-            "sum(match(lower(message), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
-            "substr(replaceRegexpAll(lower(message), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
-            "FROM logs.container_logs "
-            "WHERE timestamp > now() - INTERVAL 1 MINUTE "
-            "GROUP BY container_id, grp "
+            "sum(match(lower(Body), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
+            "substr(replaceRegexpAll(lower(Body), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
+            "FROM observability.otel_logs_local "
+            "WHERE Timestamp > now() - INTERVAL 1 MINUTE "
+            "AND ServiceName != 'nginx' "
+            "GROUP BY ContainerId, grp "
             f"HAVING req_per_sec >= {SPAM_REQ_PER_SEC_THRESHOLD} "
             f"OR (cnt >= {SPAM_COUNT_THRESHOLD} AND ddos_hits >= {SPAM_DDOS_HIT_THRESHOLD}) "
             "ORDER BY cnt DESC "
@@ -446,10 +482,11 @@ async def check_container_downtime():
     """
     try:
         sql = (
-            "SELECT container_id, any(container_name) as container_name, max(timestamp) as last_seen "
-            "FROM logs.container_logs "
-            "WHERE timestamp > now() - INTERVAL 1 HOUR "
-            "GROUP BY container_id "
+            "SELECT ContainerId, any(ContainerName) as container_name, max(Timestamp) as last_seen "
+            "FROM observability.otel_logs_local "
+            "WHERE Timestamp > now() - INTERVAL 1 HOUR "
+            "AND ServiceName != 'nginx' "
+            "GROUP BY ContainerId "
             "FORMAT JSONCompact"
         )
         url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -583,10 +620,11 @@ async def check_and_assign_containers():
     """Auto-map PSU registry containers to users based on image_name parsing."""
     try:
         sql = (
-            "SELECT DISTINCT container_name, image_name "
-            "FROM logs.container_logs "
-            "WHERE timestamp > now() - INTERVAL 1 HOUR "
-            "AND (image_name LIKE 'registry.in.psu.ac.th:443/%' OR image_name LIKE 'registry.in.psu.ac.th/%') "
+            "SELECT DISTINCT ContainerName, ContainerImage "
+            "FROM observability.otel_logs_local "
+            "WHERE Timestamp > now() - INTERVAL 1 HOUR "
+            "AND ServiceName != 'nginx' "
+            "AND (ContainerImage LIKE 'registry.in.psu.ac.th:443/%' OR ContainerImage LIKE 'registry.in.psu.ac.th/%') "
             "FORMAT JSONCompact"
         )
         url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -630,65 +668,104 @@ async def check_and_assign_containers():
     except Exception as e:
         log.warning("check_and_assign_containers error: %s", e)
 
-async def auto_backup_and_purge():
-    """Daily job: Backup PostgreSQL/ClickHouse, then purge old logs based on settings."""
-    try:
-        # 1. Get TTL from settings
-        async with AsyncSessionLocal() as db:
-            res = await db.execute(text("SELECT value FROM settings WHERE key = 'ttl_days'"))
-            ttl_val = res.scalar()
-            ttl_days = int(ttl_val) if ttl_val else 90
-        
-        log.info("Starting scheduled Auto Backup & Purge (TTL: %d days)...", ttl_days)
-        
-        # 2. Run backup.sh in the backup container
-        # Note: Script is at /usr/local/bin/backup.sh inside the container
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "backup", "bash", "/usr/local/bin/backup.sh",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+# ── Phase 15: Backup + Auto-Clear with Lock ───────────────────────────────────
+
+async def _start_backup_run(triggered_by: str) -> int:
+    acquired = await redis_client.set(
+        "backup:state",
+        json.dumps({"running": True, "since": datetime.utcnow().isoformat(), "run_id": 0}),
+        nx=True, ex=3600,
+    )
+    if not acquired:
+        raise HTTPException(409, "Backup already in progress")
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            text("INSERT INTO backup_runs (status, triggered_by) VALUES ('running', :by) RETURNING id"),
+            {"by": triggered_by},
         )
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode != 0:
-            err_msg = stderr.decode().strip()
-            log.error("Scheduled Backup FAILED: %s", err_msg)
-            # Notify admins via internal notification system
-            async with AsyncSessionLocal() as db:
-                await db.execute(text(
-                    "INSERT INTO notifications (type, severity, title, message) "
-                    "VALUES ('backup_fail', 'critical', :title, :msg)"
-                ), {"title": "🚨 Scheduled Backup Failed", "msg": f"Backup script exited with code {proc.returncode}. Error: {err_msg[:200]}"})
-                await db.commit()
-            return
+        run_id = result.scalar()
+        await db.commit()
+    await redis_client.set(
+        "backup:state",
+        json.dumps({"running": True, "since": datetime.utcnow().isoformat(), "run_id": run_id}),
+        ex=3600,
+    )
+    return run_id
 
-        log.info("Backup completed successfully. Proceeding to purge logs older than %d days.", ttl_days)
-        
-        # 3. Purge ClickHouse logs older than TTL (Heavyweight Mutation)
-        sql = f"ALTER TABLE logs.container_logs DELETE WHERE timestamp < now() - INTERVAL {ttl_days} DAY SETTINGS mutations_sync = 0"
-        url = f"http://{CH_HOST}:{CH_PORT}/"
+
+async def _finish_backup_run(run_id: int, status: str, cleared_rows: int = 0, error: str = ""):
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            text("UPDATE backup_runs SET status=:s, finished_at=now(), cleared_rows=:r, error_message=:e WHERE id=:id"),
+            {"s": status, "r": cleared_rows, "e": error or None, "id": run_id},
+        )
+        await db.commit()
+    await redis_client.delete("backup:state")
+
+
+async def _run_backup() -> bool:
+    try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=sql,
-                                    params={"database": CH_DB},
-                                    headers={"X-ClickHouse-User": CH_USER,
-                                             "X-ClickHouse-Key": CH_PASS},
-                                    timeout=60) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    log.error("Scheduled Purge FAILED: %s", body)
-                else:
-                    log.info("Scheduled Purge mutation started.")
-                    
-        # 4. Notify success in Dashboard
-        async with AsyncSessionLocal() as db:
-            await db.execute(text(
-                "INSERT INTO notifications (type, severity, title, message) "
-                "VALUES ('backup_success', 'info', :title, :msg)"
-            ), {"title": "✅ Auto Backup & Purge Done", "msg": f"Successfully backed up and purged logs older than {ttl_days} days."})
-            await db.commit()
-
+            async with session.post(
+                "http://backup:8080/trigger",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                return resp.status == 200
     except Exception as e:
-        log.exception("auto_backup_and_purge error: %s", e)
+        log.error(f"Backup trigger failed: {e}")
+        return False
+
+
+async def _truncate_clickhouse() -> int:
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url, params={"query": "SELECT count() FROM observability.otel_logs_local FORMAT JSONCompact"},
+            headers=headers, timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            body = await resp.json(content_type=None)
+    n = int((body.get("data") or [[0]])[0][0])
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url, params={"query": "TRUNCATE TABLE observability.otel_logs_local"},
+            headers=headers, timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"TRUNCATE failed: {(await resp.text())[:200]}")
+    return n
+
+
+async def _notify(ntype: str, severity: str, title: str, message: str):
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            text("INSERT INTO notifications (type, severity, title, message) VALUES (:t,:s,:ti,:m)"),
+            {"t": ntype, "s": severity, "ti": title, "m": message},
+        )
+        await db.commit()
+
+
+async def auto_backup_and_clear(triggered_by: str = "schedule"):
+    run_id = await _start_backup_run(triggered_by)
+    try:
+        ok = await _run_backup()
+        if not ok:
+            await _finish_backup_run(run_id, "failed", error="backup script non-zero exit")
+            await _notify("backup_fail", "critical", "🚨 Backup Failed",
+                          "Scheduled backup failed — ClickHouse NOT cleared.")
+            return
+        cleared = await _truncate_clickhouse()
+        await _finish_backup_run(run_id, "success", cleared_rows=cleared)
+        await _notify("backup_success", "info", "✅ Backup + Clear Complete",
+                      f"Backup succeeded. Cleared {cleared:,} log rows from ClickHouse.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("auto_backup_and_clear")
+        try:
+            await _finish_backup_run(run_id, "failed", error=str(e))
+        except Exception:
+            await redis_client.delete("backup:state")
 
 
 # ── Global State for Circuit Breaker & Caching ────────────────────────────────
@@ -725,13 +802,12 @@ ch_circuit = CircuitBreaker()
 # ── App Lifecycle & Rate Limiting ─────────────────────────────────────────────
 scheduler = AsyncIOScheduler()
 redis_client: redis_async.Redis = None
-_nginx_ingester_task: asyncio.Task = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, _nginx_ingester_task
+    global redis_client
     redis_host = os.getenv("REDIS_HOST", "redis")
-    redis_client = redis_async.Redis(host=redis_host, port=6379, decode_responses=True)
+    redis_password = os.getenv("REDIS_PASSWORD") or None
+    redis_client = redis_async.Redis(host=redis_host, port=6379, password=redis_password, decode_responses=True)
 
     await init_db()
     # ตรวจจับ Error จากคำใน Log (Regex)
@@ -742,8 +818,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_container_downtime, "interval", seconds=60, id="downtime_checker")
     # แม็พ Container จาก Registry เข้ากับ SSO Users แบบอัตโนมัติ
     scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
-    # Auto Backup & Purge: ทุกวันเวลา 03:00 น.
-    scheduler.add_job(auto_backup_and_purge, "cron", hour=3, minute=0, id="auto_backup_purge")
+    # Auto Backup + Clear: every 5 days at 03:00
+    scheduler.add_job(auto_backup_and_clear, "cron", hour=3, minute=0, day="*/5", id="auto_backup_clear")
 
     scheduler.start()
     log.info("Scheduler started — checking logs and container health")
@@ -823,13 +899,41 @@ async def rate_limit_purge(request: Request):
         raise HTTPException(status_code=429, detail="Please wait before performing another purge.")
 
 
+from opentelemetry import trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+_otel_provider = TracerProvider()
+_otel_provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(
+            endpoint=os.getenv("OTEL_EXPORTER_ENDPOINT", "http://otel-gateway:4317"),
+            insecure=True,
+        )
+    )
+)
+trace.set_tracer_provider(_otel_provider)
+
 app = FastAPI(title="Log Dashboard API", lifespan=lifespan)
+FastAPIInstrumentor.instrument_app(app)
+
+_cors_env = os.getenv("CORS_ORIGINS", "")
+_cors_origins = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env
+    else [
+        "https://monitor-eila.psu.ac.th",
+        "http://localhost",
+        "http://localhost:80",
+        "http://127.0.0.1",
+    ]
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://monitor-eila.psu.ac.th",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -837,14 +941,30 @@ app.add_middleware(
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
-def get_current_user(access_token: Optional[str] = Cookie(default=None)):
-    if not access_token:
+async def get_current_user(request: Request, session_id: Optional[str] = Cookie(default=None)):
+    if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        payload = decode_token(access_token)
-        return payload  # {"sub": username, "role": role, "user_id": id}
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+
+    fp = compute_fingerprint(request)
+    if fp["fp_ua"] != session.get("fp_ua", ""):
+        await delete_session(session_id)
+        raise HTTPException(status_code=401, detail="Session invalidated: browser changed. Please log in again.")
+
+    if fp["fp_net"] != session.get("fp_net", ""):
+        session["fp_net"] = fp["fp_net"]
+        session["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+        await redis_client.setex(f"session:{session_id}", SESSION_TTL, json.dumps(session))
+
+    return {
+        "sub":          session["username"],
+        "role":         session["role"],
+        "user_id":      session["user_id"],
+        "display_name": session["display_name"],
+        "sso_raw":      session.get("sso_raw"),
+    }
 
 
 def require_role(*roles: str):
@@ -883,47 +1003,47 @@ class RoleUpdateRequest(BaseModel):
 
 # ── Routes: Auth ──────────────────────────────────────────────────────────────
 @app.post("/api/auth/login", dependencies=[Depends(rate_limit_login)])
-async def login(req: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     """Login with Super Admin (.env) or Database Users."""
-    # 1. Check Super Admin
     if check_super_admin(req.username, req.password):
         username = req.username
         role = "super_admin"
         user_id = 0
         display_name = req.username
     else:
-        # 2. Check Database Users
         res = await db.execute(text(
             "SELECT id, username, password_hash, role, display_name FROM users WHERE username = :u"
         ), {"u": req.username})
         user = res.fetchone()
-        
         if not user or not user[2] or not verify_password(req.password, user[2]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
         user_id, username, _, role, display_name = user
-        if not display_name: display_name = username
+        if not display_name:
+            display_name = username
 
-    token = create_access_token({
-        "sub": username,
-        "role": role,
-        "user_id": user_id,
-        "display_name": display_name,
-    })
+    fp = compute_fingerprint(request)
+    sid = await create_session(
+        {"username": username, "role": role, "user_id": user_id, "display_name": display_name},
+        fp,
+    )
+    response.delete_cookie("access_token", path="/")
     response.set_cookie(
-        key="access_token",
-        value=token,
+        key="session_id",
+        value=sid,
         httponly=True,
         samesite="lax",
-        secure=False,
-        max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
-        path="/"
+        secure=COOKIE_SECURE,
+        max_age=SESSION_TTL,
+        path="/",
     )
     return {"ok": True, "role": role, "username": username}
 
 
 @app.post("/api/auth/logout")
-async def logout(response: Response):
+async def logout(response: Response, session_id: Optional[str] = Cookie(default=None)):
+    if session_id:
+        await delete_session(session_id)
+    response.delete_cookie("session_id", path="/")
     response.delete_cookie("access_token", path="/")
     return {"ok": True}
 
@@ -935,6 +1055,7 @@ async def me(user=Depends(get_current_user)):
         "role": user.get("role"),
         "user_id": user.get("user_id"),
         "display_name": user.get("display_name", user.get("sub")),
+        "sso_raw": user.get("sso_raw"),
     }
 
 
@@ -960,7 +1081,7 @@ async def sso_redirect():
 
 
 @app.get("/auth/callback")
-async def sso_callback(code: str = Query(...), response: Response = None, db: AsyncSession = Depends(get_db)):
+async def sso_callback(request: Request, code: str = Query(...), response: Response = None, db: AsyncSession = Depends(get_db)):
     """Handle Authentik callback, create/update user, issue JWT."""
     if not AUTHENTIK_CLIENT_ID:
         raise HTTPException(503, "PSU SSO not configured")
@@ -985,6 +1106,10 @@ async def sso_callback(code: str = Query(...), response: Response = None, db: As
             headers={"Authorization": f"Bearer {tokens['access_token']}"}
         )
         userinfo = userinfo_resp.json()
+        
+    groups = userinfo.get("groups", [])
+    if "logstore_admin" not in groups:
+        raise HTTPException(status_code=403, detail="Access Denied: 'logstore_admin' group is required.")
 
     sub = userinfo.get("sub")
     raw_name = userinfo.get("preferred_username") or userinfo.get("name") or sub
@@ -1006,14 +1131,29 @@ async def sso_callback(code: str = Query(...), response: Response = None, db: As
     await db.commit()
     user_id, role, final_display_name = row[0], row[1], row[2]
 
-    access_token = create_access_token({
-        "sub": username,
-        "role": role,
-        "user_id": user_id,
-        "display_name": final_display_name,
-    })
+    # FP & Session
+    fp = compute_fingerprint(request)
+    sid = await create_session(
+        {
+            "username": username,
+            "role": role,
+            "user_id": user_id,
+            "display_name": final_display_name,
+            "sso_raw": userinfo,
+        },
+        fp,
+    )
     resp = RedirectResponse(url="/logstore/", status_code=302)
-    resp.set_cookie("access_token", access_token, httponly=True, samesite="lax", max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600, path="/")
+    resp.delete_cookie("access_token", path="/")
+    resp.set_cookie(
+        key="session_id",
+        value=sid,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        max_age=SESSION_TTL,
+        path="/",
+    )
     return resp
 
 
@@ -1152,20 +1292,20 @@ async def export_logs(
         if not cnames:
             return StreamingResponse(iter([]), media_type="application/x-ndjson")
 
-    parts = []
+    parts = ["ServiceName != 'nginx'"]
     if cnames:
         safe = ",".join(f"'{c}'" for c in cnames)
-        parts.append(f"container_name IN ({safe})")
+        parts.append(f"ContainerName IN ({safe})")
     if from_ts:
-        parts.append(f"timestamp >= '{from_ts}'")
+        parts.append(f"Timestamp >= '{from_ts}'")
     if to_ts:
-        parts.append(f"timestamp <= '{to_ts}'")
+        parts.append(f"Timestamp <= '{to_ts}'")
 
-    where = ("WHERE " + " AND ".join(parts)) if parts else ""
+    where = "WHERE " + " AND ".join(parts)
     sql = (
-        f"SELECT timestamp, container_id, container_name, image_name, level, stream, host, message, labels "
-        f"FROM logs.container_logs {where} "
-        f"ORDER BY timestamp ASC "
+        f"SELECT Timestamp, ContainerId, ContainerName, ContainerImage, SeverityText, HostName, Body "
+        f"FROM observability.otel_logs_local {where} "
+        f"ORDER BY Timestamp ASC "
         f"FORMAT JSONEachRow"
     )
 
@@ -1190,6 +1330,139 @@ async def export_logs(
             "X-Accel-Buffering": "no"
         },
     )
+
+
+@app.get("/api/logs/context")
+async def logs_context(
+    container: str = Query(..., min_length=1, max_length=200),
+    ts: str = Query(..., min_length=1, max_length=64),
+    window_sec: int = Query(default=30, ge=1, le=300),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return logs ±window_sec around (container, ts). Anchor row marked client-side."""
+    try:
+        anchor_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "Invalid ts — must be ISO 8601")
+
+    if user.get("role") == "developer":
+        result = await db.execute(text(
+            "SELECT container_id FROM container_ownership WHERE user_id = :uid"
+        ), {"uid": user.get("user_id")})
+        owned = {row[0] for row in result.fetchall()}
+        if container not in owned:
+            raise HTTPException(403, "Container not owned by user")
+
+    safe_container = container.replace("'", "''")
+    anchor_iso = anchor_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    sql = (
+        "SELECT Timestamp, ContainerName, SeverityText, Body "
+        "FROM observability.otel_logs_local "
+        f"WHERE ContainerName = '{safe_container}' "
+        f"  AND Timestamp BETWEEN toDateTime64('{anchor_iso}', 9) - INTERVAL {window_sec} SECOND "
+        f"                    AND toDateTime64('{anchor_iso}', 9) + INTERVAL {window_sec} SECOND "
+        "ORDER BY Timestamp ASC "
+        "LIMIT 2000 "
+        "FORMAT JSONCompact"
+    )
+
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params={"query": sql},
+                               headers={"X-ClickHouse-User": CH_USER,
+                                        "X-ClickHouse-Key": CH_PASS},
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                detail = (await resp.text())[:200]
+                raise HTTPException(502, f"ClickHouse query failed: {detail}")
+            body = await resp.json(content_type=None)
+
+    return {
+        "anchor_ts":   anchor_dt.isoformat(),
+        "container":   container,
+        "window_sec":  window_sec,
+        "rows":        body.get("data", []),
+    }
+
+
+@app.get("/api/logs/trace/{trace_id}")
+async def logs_by_trace(trace_id: str, user=Depends(get_current_user)):
+    if not trace_id or len(trace_id) > 64:
+        raise HTTPException(400, "Invalid trace_id")
+    safe_tid = trace_id.replace("'", "''")
+    sql = (
+        "SELECT Timestamp, ServiceName, SeverityText, Body, ContainerName "
+        "FROM observability.otel_logs_local "
+        f"WHERE TraceId = '{safe_tid}' "
+        "ORDER BY Timestamp ASC "
+        "LIMIT 500 "
+        "FORMAT JSONCompact"
+    )
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url, params={"query": sql},
+            headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                detail = (await resp.text())[:200]
+                raise HTTPException(502, f"ClickHouse query failed: {detail}")
+            body = await resp.json(content_type=None)
+    return {"trace_id": trace_id, "rows": body.get("data", [])}
+
+
+@app.get("/api/logs/patterns")
+async def log_patterns(
+    minutes: int = Query(default=60, ge=5, le=1440),
+    container: str = Query(default="", max_length=200),
+    user=Depends(get_current_user),
+):
+    container_clause = (
+        f"AND ContainerName = '{container.replace(chr(39), chr(39) * 2)}'"
+        if container else ""
+    )
+    # Strip timestamps (ISO / syslog) and IPv4 addresses before digit-masking,
+    # so "2024-01-15 14:23:45 192.168.1.1 GET /api" → "GET /api ? ok"
+    # instead of "?-?-? ?:?:? ?.?.?.? GET /api ? ok".
+    sql = (
+        "SELECT "
+        "  trimLeft(replaceRegexpAll("
+        "    replaceRegexpAll(Body,"
+        "      '[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}[0-9.,+Z: ]*"
+        "       |[0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}',"
+        "      ''"
+        "    ),"
+        "    '[0-9a-f]{8,}|[0-9]+',"
+        "    '?'"
+        "  )) AS pattern, "
+        "  count()           AS frequency, "
+        "  min(Timestamp)    AS first_seen, "
+        "  max(Timestamp)    AS last_seen, "
+        "  any(SeverityText) AS severity "
+        "FROM observability.otel_logs_local "
+        f"WHERE Timestamp > now() - INTERVAL {minutes} MINUTE "
+        "  AND SeverityText != 'DEBUG' "
+        "  AND ServiceName != 'nginx' "
+        f"  {container_clause} "
+        "GROUP BY pattern "
+        "ORDER BY frequency DESC "
+        "LIMIT 50 "
+        "FORMAT JSONCompact"
+    )
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url, params={"query": sql},
+            headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            if resp.status != 200:
+                detail = (await resp.text())[:200]
+                raise HTTPException(502, f"ClickHouse query failed: {detail}")
+            body = await resp.json(content_type=None)
+    return {"minutes": minutes, "rows": body.get("data", [])}
 
 
 @app.get("/api/alerts/spam")
@@ -1233,6 +1506,40 @@ async def list_spam_alerts(
     ]
 
 
+@app.post("/api/alerts/webhook")
+async def alertmanager_webhook(request: Request):
+    """Receive Alertmanager webhook — insert into notifications + broadcast to SSE.
+    No auth required: endpoint only reachable from internal Docker network.
+    """
+    payload = await request.json()
+    async with AsyncSessionLocal() as db:
+        for alert in payload.get("alerts", []):
+            status = alert.get("status", "firing")
+            labels = alert.get("labels", {})
+            annotations = alert.get("annotations", {})
+            severity = labels.get("severity", "warning")
+            alertname = labels.get("alertname", "Unknown Alert")
+            summary = annotations.get("summary", alertname)
+            container = labels.get("name", labels.get("container", "")) or None
+            notif_type = "critical" if severity == "critical" else "warning"
+            title = f"[{'RESOLVED' if status == 'resolved' else 'ALERT'}] {alertname}"
+
+            result = await db.execute(text(
+                "INSERT INTO notifications (type, severity, title, message, container_name) "
+                "VALUES (:type, :severity, :title, :message, :cname) RETURNING id"
+            ), {"type": notif_type, "severity": severity, "title": title,
+                "message": summary, "cname": container})
+            notif_id = result.scalar()
+            await db.commit()
+
+            await broadcast_notification({
+                "id": notif_id, "type": notif_type, "severity": severity,
+                "title": title, "message": summary, "container_name": container,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+    return {"ok": True}
+
+
 @app.get("/api/debug/spam-scan")
 async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db: AsyncSession = Depends(get_db)):
     """Run the spam-detection SQL on-demand and return raw groups for debugging.
@@ -1242,16 +1549,17 @@ async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db
     """
     sql = (
         "SELECT "
-        "container_id, "
-        "any(container_name) as container_name, "
-        "max(message) as sample_msg, "
+        "ContainerId, "
+        "any(ContainerName) as container_name, "
+        "max(Body) as sample_msg, "
         "count() as cnt, "
         "round(count() / 60.0, 2) as req_per_sec, "
-        "sum(match(lower(message), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
-        "substr(replaceRegexpAll(lower(message), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
-        "FROM logs.container_logs "
-        "WHERE timestamp > now() - INTERVAL 1 MINUTE "
-        "GROUP BY container_id, grp "
+        "sum(match(lower(Body), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
+        "substr(replaceRegexpAll(lower(Body), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
+        "FROM observability.otel_logs_local "
+        "WHERE Timestamp > now() - INTERVAL 1 MINUTE "
+        "AND ServiceName != 'nginx' "
+        "GROUP BY ContainerId, grp "
         f"HAVING req_per_sec >= {SPAM_REQ_PER_SEC_THRESHOLD} "
         f"OR (cnt >= {SPAM_COUNT_THRESHOLD} AND ddos_hits >= {SPAM_DDOS_HIT_THRESHOLD}) "
         "ORDER BY cnt DESC "
@@ -1403,17 +1711,14 @@ class PurgeRequest(BaseModel):
 async def purge_data(req: PurgeRequest):
     """Permanently delete logs for a container or stack (Heavyweight Mutation)."""
     if req.type == "container":
-        where = f"container_name = '{req.name.replace("'", "''")}'"
+        where = f"ContainerName = '{req.name.replace(chr(39), chr(39)*2)}'"
     elif req.type == "stack":
-        # Supports both com.docker.compose.project and com_docker_compose_project
-        where = (
-            f"JSONExtractString(labels, 'com.docker.compose.project') = '{req.name.replace("'", "''")}' "
-            f"OR JSONExtractString(labels, 'com_docker_compose_project') = '{req.name.replace("'", "''")}'"
-        )
+        safe_name = req.name.replace(chr(39), chr(39)*2)
+        where = f"ResourceAttributes['container.label.com.docker.compose.project'] = '{safe_name}'"
     else:
         raise HTTPException(400, "Invalid purge type")
 
-    sql = f"ALTER TABLE logs.container_logs DELETE WHERE {where} SETTINGS mutations_sync = 0"
+    sql = f"ALTER TABLE observability.otel_logs_local DELETE WHERE {where} SETTINGS mutations_sync = 0"
     
     url = f"http://{CH_HOST}:{CH_PORT}/"
     async with aiohttp.ClientSession() as session:
@@ -1459,6 +1764,25 @@ async def update_setting(
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
     ), {"key": req.key, "value": req.value})
     await db.commit()
+
+    if req.key == "ttl_days":
+        try:
+            days = max(1, int(req.value))
+            alter_sql = (
+                f"ALTER TABLE observability.otel_logs_local "
+                f"MODIFY TTL _ttl_date + INTERVAL {days} DAY"
+            )
+            url = f"http://{CH_HOST}:{CH_PORT}/"
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, data=alter_sql,
+                                  headers={"X-ClickHouse-User": CH_USER,
+                                           "X-ClickHouse-Key": CH_PASS}) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        log.warning("ClickHouse TTL alter failed: %s", body[:200])
+        except Exception:
+            log.exception("Failed to apply TTL to ClickHouse")
+
     return {"ok": True}
 
 
@@ -1589,12 +1913,13 @@ async def notifications_stream(request: Request, user=Depends(get_current_user))
 async def logs_stream(
     request: Request,
     container_names: str = Query(default=""),
+    compose_project: str = Query(default=""),
     level: str = Query(default=""),
     search: str = Query(default=""),
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """SSE: push new container log rows every 3s."""
+    """SSE: push new container log rows every 1s."""
     cnames = [c.strip() for c in container_names.split(",") if c.strip()] if container_names else []
 
     if user.get("role") == "developer":
@@ -1605,7 +1930,7 @@ async def logs_stream(
         cnames = [c for c in cnames if c in owned] if cnames else list(owned)
     await db.close()
 
-    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=15)).strftime("%Y-%m-%d %H:%M:%S")
+    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
 
     async def event_generator():
         nonlocal last_ts
@@ -1617,22 +1942,30 @@ async def logs_stream(
                     if await request.is_disconnected():
                         break
 
-                    parts = [f"timestamp > toDateTime64('{last_ts}', 3, 'UTC')"]
+                    parts = [
+                        f"Timestamp > toDateTime64('{last_ts}', 9, 'UTC')",
+                        "ServiceName != 'nginx'",
+                    ]
                     if cnames:
                         safe = ",".join(f"'{c}'" for c in cnames)
-                        parts.append(f"container_name IN ({safe})")
+                        parts.append(f"ContainerName IN ({safe})")
+                    if compose_project:
+                        safe_proj = compose_project.replace("'", "")
+                        parts.append(f"ResourceAttributes['container.label.com.docker.compose.project'] = '{safe_proj}'")
                     if level:
-                        parts.append(f"level = '{level.replace(chr(39), '')}'")
+                        parts.append(f"SeverityText = '{level.replace(chr(39), '')}'")
                     if search:
                         esc_s = search.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
-                        parts.append(f"message ILIKE '%{esc_s}%'")
+                        parts.append(f"Body ILIKE '%{esc_s}%'")
 
+                    _STREAM_LIMIT = 500
                     sql = (
-                        f"SELECT timestamp, container_name, level, message, "
-                        f"formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'UTC') AS ts_utc "
-                        f"FROM container_logs WHERE {' AND '.join(parts)} "
-                        f"ORDER BY timestamp ASC LIMIT 100 FORMAT JSONCompact"
+                        f"SELECT Timestamp, ContainerName, SeverityText, Body, "
+                        f"toString(Timestamp, 'UTC') AS ts_raw "
+                        f"FROM observability.otel_logs_local WHERE {' AND '.join(parts)} "
+                        f"ORDER BY Timestamp ASC LIMIT {_STREAM_LIMIT} FORMAT JSONCompact"
                     )
+                    has_more = False
                     try:
                         async with s.get(url,
                                          params={"query": sql, "database": CH_DB},
@@ -1644,6 +1977,7 @@ async def logs_stream(
                                     last_ts = max(r[4] for r in rows)
                                     out_rows = [r[:4] for r in rows]
                                     yield f"data: {json.dumps({'rows': out_rows})}\n\n"
+                                    has_more = len(rows) == _STREAM_LIMIT
                                 else:
                                     yield ": heartbeat\n\n"
                             else:
@@ -1654,7 +1988,8 @@ async def logs_stream(
                         log.warning("logs/stream exception: %s", exc)
                         yield ": heartbeat\n\n"
 
-                    await asyncio.sleep(2)
+                    if not has_more:
+                        await asyncio.sleep(1)
         except asyncio.CancelledError:
             pass
 
@@ -1667,8 +2002,8 @@ async def nginx_stream(
     request: Request,
     user=Depends(require_role("super_admin", "admin")),
 ):
-    """SSE: push new nginx log rows every 2s. Admin/super_admin only."""
-    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=15)).strftime("%Y-%m-%d %H:%M:%S")
+    """SSE: push new nginx log rows every 1s. Admin/super_admin only."""
+    last_ts = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
 
     async def event_generator():
         nonlocal last_ts
@@ -1680,12 +2015,23 @@ async def nginx_stream(
                     if await request.is_disconnected():
                         break
 
+                    _STREAM_LIMIT = 500
                     sql = (
-                        f"SELECT timestamp, remote_addr, method, referer, path, status, bytes_sent, request_time, "
-                        f"formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'UTC') AS ts_utc "
-                        f"FROM nginx_logs WHERE timestamp > toDateTime64('{last_ts}', 3, 'UTC') "
-                        f"ORDER BY timestamp ASC LIMIT 100 FORMAT JSONCompact"
+                        f"SELECT Timestamp, "
+                        f"LogAttributes['remote_addr'] AS remote_addr, "
+                        f"LogAttributes['method'] AS method, "
+                        f"LogAttributes['referer'] AS referer, "
+                        f"LogAttributes['path'] AS path, "
+                        f"toUInt16OrZero(LogAttributes['status']) AS status, "
+                        f"toUInt64OrZero(LogAttributes['bytes_sent']) AS bytes_sent, "
+                        f"toFloat32OrZero(LogAttributes['request_time']) AS request_time, "
+                        f"toString(Timestamp, 'UTC') AS ts_raw "
+                        f"FROM observability.otel_logs_local "
+                        f"WHERE ServiceName = 'nginx' "
+                        f"AND Timestamp > toDateTime64('{last_ts}', 9, 'UTC') "
+                        f"ORDER BY Timestamp ASC LIMIT {_STREAM_LIMIT} FORMAT JSONCompact"
                     )
+                    has_more = False
                     try:
                         async with s.get(url,
                                          params={"query": sql, "database": CH_DB},
@@ -1697,6 +2043,7 @@ async def nginx_stream(
                                     last_ts = max(r[8] for r in rows)
                                     out_rows = [r[:8] for r in rows]
                                     yield f"data: {json.dumps({'rows': out_rows})}\n\n"
+                                    has_more = len(rows) == _STREAM_LIMIT
                                 else:
                                     yield ": heartbeat\n\n"
                             else:
@@ -1707,7 +2054,8 @@ async def nginx_stream(
                         log.warning("nginx/stream exception: %s", exc)
                         yield ": heartbeat\n\n"
 
-                    await asyncio.sleep(2)
+                    if not has_more:
+                        await asyncio.sleep(1)
         except asyncio.CancelledError:
             pass
 
@@ -1717,231 +2065,47 @@ async def nginx_stream(
 
 @app.post("/api/admin/backup/trigger")
 async def trigger_backup(user=Depends(require_role("super_admin", "admin"))):
-    """Admin-only: Trigger a manual backup by calling the backup service API."""
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post("http://backup:8080/trigger", timeout=10.0)
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                log.error("Backup service responded with status: %d body: %s", resp.status_code, resp.text)
-                raise HTTPException(status_code=502, detail=f"Backup service error: {resp.text}")
-    except httpx.ConnectError:
-        log.error("Failed to connect to backup service at http://backup:8080")
-        raise HTTPException(status_code=503, detail="Backup service is not available")
-    except Exception as e:
-        log.exception("trigger_backup error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ── Nginx Ingester ────────────────────────────────────────────────────────────
-NGINX_REDIS_KEY    = "nginx"
-NGINX_BATCH_SIZE   = 200
-NGINX_FLUSH_SECS   = 5
+    state = await redis_client.get("backup:state")
+    if state:
+        raise HTTPException(409, "Backup already in progress")
+    asyncio.create_task(auto_backup_and_clear(triggered_by=str(user.get("user_id", "admin"))))
+    return {"status": "started"}
 
 
-def _fmt_ts(ts_val) -> str:
-    """Format any timestamp value to ClickHouse DateTime64 string."""
-    try:
-        if isinstance(ts_val, str):
-            dt = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
-        elif isinstance(ts_val, (int, float)):
-            dt = datetime.fromtimestamp(ts_val, tz=timezone.utc)
-        else:
-            dt = datetime.now(timezone.utc)
-    except Exception:
-        dt = datetime.now(timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+@app.get("/api/admin/backup/status")
+async def backup_status(user=Depends(require_role("super_admin", "admin"))):
+    state_raw = await redis_client.get("backup:state")
+    if state_raw:
+        return {"running": True, **json.loads(state_raw)}
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(text(
+            "SELECT id, started_at, finished_at, status, cleared_rows, error_message "
+            "FROM backup_runs ORDER BY started_at DESC LIMIT 1"
+        ))
+        last = result.mappings().first()
+    return {"running": False, "last_run": dict(last) if last else None}
 
 
-async def nginx_log_ingester():
-    """BLPOP nginx events from Redis and batch-insert into ClickHouse."""
-    await ensure_nginx_tables()
-    url     = f"http://{CH_HOST}:{CH_PORT}/"
-    headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
-
-    while True:
-        batch: list[dict] = []
-        deadline = asyncio.get_event_loop().time() + NGINX_FLUSH_SECS
-
-        while len(batch) < NGINX_BATCH_SIZE:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                break
-            try:
-                result = await redis_client.blpop(NGINX_REDIS_KEY, timeout=max(1, int(remaining)))
-            except Exception as e:
-                log.debug("nginx_ingester redis error: %s", e)
-                await asyncio.sleep(2)
-                break
-            if result is None:
-                break
-            try:
-                batch.append(json.loads(result[1]))
-            except Exception:
-                continue
-
-        if not batch:
-            continue
-
-        payload = "\n".join(
-            json.dumps({
-                "timestamp":    _fmt_ts(e.get("timestamp")),
-                "source_host":  str(e.get("source_host", ""))[:128],
-                "remote_addr":  str(e.get("remote_addr", ""))[:45],
-                "method":       str(e.get("method", ""))[:10],
-                "path":         str(e.get("path", ""))[:2048],
-                "path_raw":     str(e.get("path_raw", e.get("path", "")))[:4096],
-                "status":       int(e.get("status", 0)),
-                "bytes_sent":   int(e.get("bytes_sent", 0)),
-                "request_time": float(e.get("request_time", 0.0)),
-                "user_agent":   str(e.get("user_agent", ""))[:512],
-                "referer":      str(e.get("referer", "-"))[:512],
-            })
-            for e in batch
-        )
-
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    url,
-                    params={"query": "INSERT INTO logs.nginx_logs FORMAT JSONEachRow", "database": "logs"},
-                    data=payload.encode(),
-                    headers={**headers, "Content-Type": "application/x-ndjson"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        log.error("nginx_ingester insert error (%d): %s", resp.status, body[:300])
-                    else:
-                        log.debug("nginx_ingester: inserted %d rows", len(batch))
-        except Exception as e:
-            log.warning("nginx_ingester insert failed: %s", e)
-
-
-# ── Nginx Tables Helper ───────────────────────────────────────────────────────────
-_nginx_tables_created = False
-
-async def ensure_nginx_tables():
-    """Auto-create nginx tables if not exist."""
-    global _nginx_tables_created
-    if _nginx_tables_created:
-        return
-
-    queries = [
-        """
-        CREATE TABLE IF NOT EXISTS logs.nginx_logs
-        (
-            timestamp       DateTime64(3, 'Asia/Bangkok'),
-            source_host     LowCardinality(String),
-            remote_addr     String,
-            method          LowCardinality(String),
-            path            String,
-            path_raw        String,
-            status          UInt16,
-            bytes_sent      UInt64,
-            request_time    Float32,
-            user_agent      String,
-            referer         String          DEFAULT '-'
-        )
-        ENGINE = MergeTree()
-        PARTITION BY toYYYYMM(timestamp)
-        ORDER BY (timestamp, source_host, status)
-        TTL toDateTime(timestamp) + INTERVAL 90 DAY
-        SETTINGS merge_with_ttl_timeout = 86400
-        """,
-        "ALTER TABLE logs.nginx_logs ADD COLUMN IF NOT EXISTS source_host LowCardinality(String) DEFAULT ''",
-        "ALTER TABLE logs.nginx_logs ADD COLUMN IF NOT EXISTS path_raw String DEFAULT ''",
-        """
-        CREATE TABLE IF NOT EXISTS logs.nginx_status_mv_target
-        (
-            minute      DateTime,
-            status      UInt16,
-            count       UInt64
-        )
-        ENGINE = SummingMergeTree()
-        PARTITION BY toYYYYMM(minute)
-        ORDER BY (minute, status)
-        TTL minute + INTERVAL 90 DAY
-        """,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_status_mv
-        TO logs.nginx_status_mv_target
-        AS
-        SELECT toStartOfMinute(timestamp) AS minute, status, count() AS count
-        FROM logs.nginx_logs GROUP BY minute, status
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS logs.nginx_top_paths_mv_target
-        (
-            hour        DateTime,
-            path       String,
-            total      UInt64,
-            avg_time   Float32,
-            error_count UInt64
-        )
-        ENGINE = SummingMergeTree()
-        PARTITION BY toYYYYMM(hour)
-        ORDER BY (hour, path)
-        TTL hour + INTERVAL 90 DAY
-        """,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_top_paths_mv
-        TO logs.nginx_top_paths_mv_target
-        AS
-        SELECT toStartOfHour(timestamp) AS hour, path, count() AS total,
-               avg(request_time) AS avg_time, countIf(status >= 400) AS error_count
-        FROM logs.nginx_logs GROUP BY hour, path
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS logs.nginx_hourly_mv_target
-        (
-            hour          DateTime,
-            total        UInt64,
-            errors       UInt64,
-            client_err   UInt64,
-            bytes_total UInt64,
-            avg_time    Float32
-        )
-        ENGINE = SummingMergeTree()
-        PARTITION BY toYYYYMM(hour)
-        ORDER BY hour
-        TTL hour + INTERVAL 90 DAY
-        """,
-        """
-        CREATE MATERIALIZED VIEW IF NOT EXISTS logs.nginx_hourly_mv
-        TO logs.nginx_hourly_mv_target
-        AS
-        SELECT toStartOfHour(timestamp) AS hour, count() AS total,
-               countIf(status >= 500) AS errors,
-               countIf(status >= 400 AND status < 500) AS client_err,
-               sum(bytes_sent) AS bytes_total,
-               avg(request_time) AS avg_time
-        FROM logs.nginx_logs GROUP BY hour
-        """
+@app.get("/api/admin/backup/history")
+async def backup_history(user=Depends(require_role("super_admin", "admin"))):
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(text(
+            "SELECT id, started_at, finished_at, status, cleared_rows, error_message "
+            "FROM backup_runs ORDER BY started_at DESC LIMIT 50"
+        ))
+        rows = result.mappings().all()
+    return [
+        {
+            "id": r["id"],
+            "started_at": str(r["started_at"]) if r["started_at"] else None,
+            "finished_at": str(r["finished_at"]) if r["finished_at"] else None,
+            "status": r["status"],
+            "cleared_rows": r["cleared_rows"],
+            "error_message": r["error_message"],
+            "databases": "PostgreSQL + ClickHouse",
+        }
+        for r in rows
     ]
-
-    url = f"http://{CH_HOST}:{CH_PORT}/"
-    headers = {"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS}
-
-    async with aiohttp.ClientSession() as s:
-        for q in queries:
-            try:
-                async with s.post(url, data=q, headers=headers) as resp:
-                    await resp.text()
-            except Exception:
-                pass
-
-    _nginx_tables_created = True
-
-
-@app.post("/api/admin/nginx-logs/setup")
-async def nginx_logs_setup(user=Depends(require_role("super_admin", "admin"))):
-    """Create nginx_logs table and materialized views (manual trigger)."""
-    global _nginx_tables_created
-    _nginx_tables_created = False
-    await ensure_nginx_tables()
-    return {"message": "Nginx tables created successfully"}
-
 
 # ── Routes: Nginx Logs (admin / super_admin only) ─────────────────────────────
 
@@ -1950,7 +2114,7 @@ async def nginx_overview(
     hours: float = Query(default=24, ge=0.05, le=168),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
+
     cache_key = f"nginx:overview:{hours}"
     if redis_client:
         cached = await redis_client.get(cache_key)
@@ -1959,12 +2123,13 @@ async def nginx_overview(
 
     query = f"""
         SELECT count() AS total,
-               countIf(status >= 500) / count() * 100 AS error_rate,
-               avg(request_time)          AS avg_time,
-               quantile(0.95)(request_time) AS p95_time,
-               sum(bytes_sent)            AS total_bytes
-        FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+               countIf(toUInt16OrZero(LogAttributes['status']) >= 500) / count() * 100 AS error_rate,
+               avg(toFloat32OrZero(LogAttributes['request_time']))           AS avg_time,
+               quantile(0.95)(toFloat32OrZero(LogAttributes['request_time'])) AS p95_time,
+               sum(toUInt64OrZero(LogAttributes['bytes_sent']))              AS total_bytes
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         FORMAT JSON
     """
     url = f"http://{CH_HOST}:{CH_PORT}/"
@@ -1995,7 +2160,7 @@ async def nginx_traffic(
     hours: float = Query(default=6, ge=0.05, le=48),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
+
     cache_key = f"nginx:traffic:{hours}"
     if redis_client:
         cached = await redis_client.get(cache_key)
@@ -2003,9 +2168,12 @@ async def nginx_traffic(
             return json.loads(cached)
 
     query = f"""
-        SELECT minute, status, sum(count) AS count
-        FROM logs.nginx_status_mv_target
-        WHERE minute >= now() - INTERVAL {int(hours * 60)} MINUTE
+        SELECT toStartOfMinute(Timestamp) AS minute,
+               toUInt16OrZero(LogAttributes['status']) AS status,
+               count() AS count
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         GROUP BY minute, status
         ORDER BY minute ASC
         FORMAT JSON
@@ -2032,7 +2200,7 @@ async def nginx_top_paths(
     limit: int = Query(default=20, ge=1, le=100),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
+
     cache_key = f"nginx:top_paths:{hours}:{limit}"
     if redis_client:
         cached = await redis_client.get(cache_key)
@@ -2040,10 +2208,14 @@ async def nginx_top_paths(
             return json.loads(cached)
 
     query = f"""
-        SELECT referer, path, count() AS total,
-               countIf(status >= 400) AS errors
-        FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+        SELECT LogAttributes['referer'] AS referer,
+               LogAttributes['path']   AS path,
+               count() AS total,
+               countIf(toUInt16OrZero(LogAttributes['status']) >= 400) AS errors
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+          AND LogAttributes['path'] != ''
         GROUP BY referer, path ORDER BY total DESC
         LIMIT {int(limit)}
         FORMAT JSON
@@ -2070,7 +2242,7 @@ async def nginx_top_ips(
     limit: int = Query(default=20, ge=1, le=100),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
+
     cache_key = f"nginx:top_ips:{hours}:{limit}"
     if redis_client:
         cached = await redis_client.get(cache_key)
@@ -2078,12 +2250,14 @@ async def nginx_top_ips(
             return json.loads(cached)
 
     query = f"""
-        SELECT remote_addr, count() AS total,
-               countIf(status >= 400) AS errors,
-               avg(request_time) AS avg_time,
-               max(timestamp) AS last_seen
-        FROM logs.nginx_logs
-        WHERE timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+        SELECT LogAttributes['remote_addr'] AS remote_addr,
+               count() AS total,
+               countIf(toUInt16OrZero(LogAttributes['status']) >= 400) AS errors,
+               avg(toFloat32OrZero(LogAttributes['request_time'])) AS avg_time,
+               max(Timestamp) AS last_seen
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
         GROUP BY remote_addr ORDER BY total DESC
         LIMIT {int(limit)}
         FORMAT JSON
@@ -2109,7 +2283,7 @@ async def nginx_hourly(
     days: int = Query(default=7, ge=1, le=30),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
+
     cache_key = f"nginx:hourly:{days}"
     if redis_client:
         cached = await redis_client.get(cache_key)
@@ -2117,11 +2291,16 @@ async def nginx_hourly(
             return json.loads(cached)
 
     query = f"""
-        SELECT hour, sum(total) AS total, sum(errors) AS errors,
-               sum(client_err) AS client_err, sum(bytes_total) AS bytes_total,
-               avg(avg_time) AS avg_time
-        FROM logs.nginx_hourly_mv_target
-        WHERE hour >= now() - INTERVAL {int(days)} DAY
+        SELECT toStartOfHour(Timestamp) AS hour,
+               count() AS total,
+               countIf(toUInt16OrZero(LogAttributes['status']) >= 500) AS errors,
+               countIf(toUInt16OrZero(LogAttributes['status']) >= 400
+                       AND toUInt16OrZero(LogAttributes['status']) < 500) AS client_err,
+               sum(toUInt64OrZero(LogAttributes['bytes_sent'])) AS bytes_total,
+               avg(toFloat32OrZero(LogAttributes['request_time'])) AS avg_time
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(days)} DAY
         GROUP BY hour ORDER BY hour ASC
         FORMAT JSON
     """
@@ -2146,33 +2325,40 @@ async def nginx_logs_query(
     hours: float            = Query(default=24, ge=0.05, le=168),
     status_code: Optional[int]   = Query(default=None, alias="status"),
     method: Optional[str]        = Query(default=None),
-    path_contains: Optional[str] = Query(default=None),
+    search: Optional[str]       = Query(default=None),
     remote_addr: Optional[str]   = Query(default=None),
     min_response_time: Optional[float] = Query(default=None),
     from_time: Optional[str]   = Query(default=None),
     to_time: Optional[str]     = Query(default=None),
+    min_status: Optional[int]        = Query(default=None, ge=100, le=599),
     page: int               = Query(default=1, ge=1),
     page_size: int          = Query(default=50, ge=1, le=500),
     order: str              = Query(default="desc"),
     user=Depends(require_role("super_admin", "admin")),
 ):
-    await ensure_nginx_tables()
 
-    conditions = [f"timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE"]
+
+    conditions = [
+        f"Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE",
+        "ServiceName = 'nginx'",
+    ]
     if status_code is not None:
-        conditions.append(f"status = {int(status_code)}")
+        conditions.append(f"toUInt16OrZero(LogAttributes['status']) = {int(status_code)}")
     if method:
-        conditions.append(f"method = '{method.upper().replace(chr(39), '')}'")
-    if path_contains:
-        conditions.append(f"path LIKE '%{path_contains.replace(chr(39), chr(39)*2)}%'")
+        conditions.append(f"LogAttributes['method'] = '{method.upper().replace(chr(39), '')}'")
+    if search:
+        esc_s = search.replace(chr(39), chr(39)*2)
+        conditions.append(f"(LogAttributes['path'] LIKE '%{esc_s}%' OR LogAttributes['remote_addr'] LIKE '%{esc_s}%' OR LogAttributes['method'] LIKE '%{esc_s}%' OR LogAttributes['referer'] LIKE '%{esc_s}%' OR toString(LogAttributes['status']) LIKE '%{esc_s}%' OR formatDateTime(Timestamp, '%Y-%m-%d %H:%i:%s', 'Asia/Bangkok') LIKE '%{esc_s}%')")
     if remote_addr:
-        conditions.append(f"remote_addr = '{remote_addr.replace(chr(39), '')}'")
+        conditions.append(f"LogAttributes['remote_addr'] = '{remote_addr.replace(chr(39), '')}'")
     if min_response_time is not None:
-        conditions.append(f"request_time >= {float(min_response_time)}")
+        conditions.append(f"toFloat32OrZero(LogAttributes['request_time']) >= {float(min_response_time)}")
+    if min_status is not None:
+        conditions.append(f"toUInt16OrZero(LogAttributes['status']) >= {int(min_status)}")
     if from_time:
-        conditions.append(f"timestamp >= toDateTime('{from_time}', 'Asia/Bangkok')")
+        conditions.append(f"Timestamp >= toDateTime('{from_time}', 'Asia/Bangkok')")
     if to_time:
-        conditions.append(f"timestamp <= toDateTime('{to_time}', 'Asia/Bangkok')")
+        conditions.append(f"Timestamp <= toDateTime('{to_time}', 'Asia/Bangkok')")
 
     where     = " AND ".join(conditions)
     offset    = (page - 1) * page_size
@@ -2183,7 +2369,7 @@ async def nginx_logs_query(
     async with aiohttp.ClientSession() as s:
         try:
             async with s.post(url,
-                              data=f"SELECT count() AS c FROM logs.nginx_logs WHERE {where} FORMAT JSON",
+                              data=f"SELECT count() AS c FROM observability.otel_logs_local WHERE {where} FORMAT JSON",
                               headers=headers) as resp:
                 body = await resp.text()
                 data = json.loads(body).get("data", []) if body else []
@@ -2194,11 +2380,17 @@ async def nginx_logs_query(
         rows = []
         try:
             async with s.post(url, headers=headers, data=f"""
-                SELECT timestamp, remote_addr, method,
-                       referer, path, status, bytes_sent, request_time
-                FROM logs.nginx_logs
+                SELECT Timestamp,
+                       LogAttributes['remote_addr'] AS remote_addr,
+                       LogAttributes['method']      AS method,
+                       LogAttributes['referer']     AS referer,
+                       LogAttributes['path']        AS path,
+                       toUInt16OrZero(LogAttributes['status'])          AS status,
+                       toUInt64OrZero(LogAttributes['bytes_sent'])      AS bytes_sent,
+                       toFloat32OrZero(LogAttributes['request_time'])   AS request_time
+                FROM observability.otel_logs_local
                 WHERE {where}
-                ORDER BY timestamp {order_dir}
+                ORDER BY Timestamp {order_dir}
                 LIMIT {int(page_size)} OFFSET {int(offset)}
                 FORMAT JSONCompact
             """) as resp:
@@ -2215,7 +2407,114 @@ async def nginx_logs_query(
         "pages":     (total + page_size - 1) // page_size,
     }
 
+@app.get("/api/admin/nginx-logs/ip-summary")
+async def nginx_ip_summary(
+    remote_addr: str = Query(..., max_length=64),
+    hours: float = Query(default=24, ge=0.05, le=168),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    safe_ip = remote_addr.replace("'", "''")
+    sql = f"""
+        SELECT
+            count()                                                              AS total,
+            countIf(toUInt16OrZero(LogAttributes['status']) >= 400)             AS errors,
+            round(countIf(toUInt16OrZero(LogAttributes['status']) >= 400)
+                  / count() * 100, 1)                                           AS error_rate,
+            min(Timestamp)                                                       AS first_seen,
+            max(Timestamp)                                                       AS last_seen,
+            arraySlice(groupArray(LogAttributes['path']), 1, 3)                 AS sample_paths
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+          AND LogAttributes['remote_addr'] = '{safe_ip}'
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=sql,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                row = data[0] if data else {}
+    except Exception:
+        row = {}
+    return {"remote_addr": remote_addr, **row}
+
+
+@app.get("/api/admin/nginx-logs/path-summary")
+async def nginx_path_summary(
+    path: str = Query(..., max_length=500),
+    hours: float = Query(default=24, ge=0.05, le=168),
+    user=Depends(require_role("super_admin", "admin")),
+):
+    safe_path = path.replace("'", "''")
+    sql = f"""
+        SELECT
+            count()                                                              AS total,
+            countIf(toUInt16OrZero(LogAttributes['status']) >= 400)             AS errors,
+            round(countIf(toUInt16OrZero(LogAttributes['status']) >= 400)
+                  / count() * 100, 1)                                           AS error_rate,
+            min(Timestamp)                                                       AS first_seen,
+            max(Timestamp)                                                       AS last_seen,
+            arraySlice(groupArray(LogAttributes['remote_addr']), 1, 3)          AS sample_ips
+        FROM observability.otel_logs_local
+        WHERE ServiceName = 'nginx'
+          AND Timestamp >= now() - INTERVAL {int(hours * 60)} MINUTE
+          AND LogAttributes['path'] = '{safe_path}'
+        FORMAT JSON
+    """
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=sql,
+                              headers={"X-ClickHouse-User": CH_USER,
+                                       "X-ClickHouse-Key": CH_PASS}) as resp:
+                data = (await resp.json(content_type=None)).get("data", [])
+                row = data[0] if data else {}
+    except Exception:
+        row = {}
+    return {"path": path, **row}
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
-@app.get("/api/health", dependencies=[Depends(rate_limit_api)])
+@app.get("/api/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Probes Postgres, ClickHouse, Redis. Returns 503 if any dependency down."""
+    checks = {"postgres": "ok", "clickhouse": "ok", "redis": "ok"}
+    all_ok = True
+
+    # Postgres
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+    except Exception as e:
+        checks["postgres"] = f"fail: {str(e)[:80]}"
+        all_ok = False
+
+    # ClickHouse
+    try:
+        url = f"http://{CH_HOST}:{CH_PORT}/"
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(url, params={"query": "SELECT 1"}, auth=(CH_USER, CH_PASS))
+            if r.status_code != 200:
+                raise RuntimeError(f"status {r.status_code}")
+    except Exception as e:
+        checks["clickhouse"] = f"fail: {str(e)[:80]}"
+        all_ok = False
+
+    # Redis
+    try:
+        if redis_client is None:
+            raise RuntimeError("redis_client not initialized")
+        await redis_client.ping()
+    except Exception as e:
+        checks["redis"] = f"fail: {str(e)[:80]}"
+        all_ok = False
+
+    body = {
+        "status":    "ok" if all_ok else "degraded",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "checks":    checks,
+    }
+    return JSONResponse(body, status_code=200 if all_ok else 503)

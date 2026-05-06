@@ -1,7 +1,3 @@
 #!/bin/bash
-
-# Start crond in the background
-crond -l 2
-
-# Start the backup trigger API server
+# Schedule lives in backend (APScheduler). This container only runs the HTTP trigger.
 python3 /usr/local/bin/server.py

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx create-docusaurus@latest docs-site classic --skip-install)"
+      "Bash(npx create-docusaurus@latest docs-site classic --skip-install)",
+      "Bash(git -C \"D:/PSU/Internship/Logs Dashboard\" diff Chores/vector/vector.toml)"
     ]
   }
 }

@@ -10,9 +10,10 @@ global:
   sendAnonymousUsage: false
 
 # ── API + Dashboard ───────────────────────────────────────────────────────────
-api:
-  dashboard: true                 # Exposed at /dashboard/ (label-gated in compose)
-  insecure: false                 # Dashboard only reachable via defined router
+api: {}
+
+# ── Ping (required for healthcheck) ──────────────────────────────────────────
+ping: {}
 
 # ── Entry Points ──────────────────────────────────────────────────────────────
 entryPoints:
@@ -25,29 +26,14 @@ entryPoints:
     #       to: websecure
     #       scheme: https
 
-  websecure:
-    address: ":443"
 
-  traefik-internal:
-    address: ":8080"              # Traefik dashboard port
 
 # ── Providers ─────────────────────────────────────────────────────────────────
 providers:
   docker:
-    # Watch Docker socket for container start/stop events.
-    # No need to edit this file when adding new services.
     endpoint: "unix:///var/run/docker.sock"
-
-    # IMPORTANT: Only expose containers with traefik.enable=true label.
-    # This prevents accidental exposure of internal services like Redis/ClickHouse.
     exposedByDefault: false
-
-    # All containers share this network; Traefik routes to their internal IPs.
-    network: "pipeline"
-
-    # Prefix for Traefik-specific Docker labels
-    # (default "traefik" — shown here for documentation clarity)
-    # defaultRule: "Host(`{{ normalize .Name }}.internal`)"
+    network: "pipeline_network"
 
   # ── File provider: for dynamic config if needed later ─────────────────────
   # file:
@@ -56,7 +42,7 @@ providers:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 log:
-  level: WARN                     # Reduce noise; use INFO for debugging
+  level: INFO                     # Reduce noise; use INFO for debugging
 
 accessLog:
   # Log access to stdout so Docker captures it via Filebeat.
@@ -71,8 +57,3 @@ accessLog:
       Duration: keep
       ServiceName: keep
 
-# ── TLS (stub — configure when certificates are available) ───────────────────
-# tls:
-#   certificates:
-#     - certFile: /certs/fullchain.pem
-#       keyFile: /certs/privkey.pem

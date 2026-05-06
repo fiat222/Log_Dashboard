@@ -1,0 +1,79 @@
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
+
+receivers:
+  filelog:
+    # Docker names container dirs by 64-char container ID, not name —
+    # glob on name won't match. Self-exclude is done at processor level (see below).
+    include: ["/var/lib/docker/containers/*/*.log"]
+    include_file_path: true
+    start_at: beginning
+    storage: file_storage
+    operators:
+      - type: json_parser
+        on_error: send
+        timestamp:
+          parse_from: attributes.time
+          layout: '2006-01-02T15:04:05.999999999Z'
+          layout_type: gotime
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: severity_parser
+        parse_from: attributes.level
+        preset: default
+        if: 'attributes.level != nil'
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  resourcedetection:
+    detectors: [docker, env]
+
+  # Drop DEBUG logs to save storage.
+  # To temporarily see DEBUG logs: remove filter/drop_debug from the pipeline
+  # processors list below + docker compose restart otel-agent (no file edit needed).
+  filter/drop_debug:
+    logs:
+      exclude:
+        match_type: strict
+        severity_texts: ["DEBUG"]
+
+  # Self-exclude: prevent feedback loop. Must run AFTER resourcedetection
+  # so container.name attribute is populated.
+  filter/exclude_self:
+    logs:
+      exclude:
+        match_type: strict
+        resource_attributes:
+          - key: container.name
+            value: otel-agent
+
+  batch:
+    send_batch_size: 8192
+    timeout: 200ms
+
+exporters:
+  otlp:
+    endpoint: otel-gateway:4317
+    tls:
+      insecure: true
+    compression: zstd
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, resourcedetection, filter/exclude_self, filter/drop_debug, batch]
+      exporters: [otlp]
+  telemetry:
+    logs:
+      level: warn

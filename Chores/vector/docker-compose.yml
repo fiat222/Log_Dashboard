@@ -3,13 +3,24 @@ services:
     image: timberio/vector:0.54.0-alpine
     container_name: vector_nginx
     restart: unless-stopped
+    user: root
+    command: [ "--config", "/etc/vector/vector.toml" ]
+    environment:
+      - VECTOR_LOG=debug
     env_file:
       - .env
     volumes:
       - ./vector.toml:/etc/vector/vector.toml:ro
       - /var/log/nginx:/var/log/nginx:ro
+    networks:
+      sys_net:
+        ipv4_address: 10.0.1.2
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  sys_net:
+    external: true

@@ -1,20 +1,22 @@
 FROM alpine:3.19
 
-RUN apk add --no-cache postgresql16-client curl bash tar
-
-# Configure timezone (optional but good for logs)
-RUN apk add --no-cache tzdata
+# Schedule lives in backend (APScheduler). Container is just a triggered worker.
+RUN apk add --no-cache postgresql16-client curl bash tar tzdata python3 \
+    && rm -rf /var/cache/apk/*
 ENV TZ=Asia/Bangkok
 
-COPY backup.sh /usr/local/bin/backup.sh
-RUN chmod +x /usr/local/bin/backup.sh
+# Non-root runtime user
+RUN addgroup -g 10001 backup && adduser -u 10001 -G backup -s /sbin/nologin -D backup \
+    && mkdir -p /backups /home/backup \
+    && chown -R 10001:10001 /backups /home/backup
 
-RUN apk add --no-cache python3
-COPY server.py /usr/local/bin/server.py
-COPY start.sh /usr/local/bin/start.sh
-RUN chmod +x /usr/local/bin/start.sh
+COPY --chown=10001:10001 backup.sh   /usr/local/bin/backup.sh
+COPY --chown=10001:10001 server.py   /usr/local/bin/server.py
+COPY --chown=10001:10001 start.sh    /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/backup.sh /usr/local/bin/start.sh
 
-# Run everyday at 02:00 AM (CRON syntax)
-RUN echo "0 2 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1" > /etc/crontabs/root
+USER 10001:10001
+WORKDIR /home/backup
+EXPOSE 8080
 
 CMD ["/usr/local/bin/start.sh"]

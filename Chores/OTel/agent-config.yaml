@@ -1,0 +1,94 @@
+receivers:
+  filelog:
+    # Docker names container dirs by 64-char container ID — glob on name won't match.
+    include: ["/var/lib/docker/containers/*/*.log"]
+    include_file_path: true
+    operators:
+      - type: json_parser
+        on_error: send
+        timestamp:
+          parse_from: attributes.time
+          layout: '2006-01-02T15:04:05.999999999Z'
+          layout_type: gotime
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: severity_parser
+        parse_from: attributes.level
+        preset: default
+        if: 'attributes.level != nil'
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  resourcedetection:
+    detectors: [docker, env]
+
+  # Drop DEBUG logs to save storage.
+  # To temporarily re-enable DEBUG: remove filter/drop_debug from pipeline processors list,
+  # then docker compose restart otel-agent (no config file edit needed).
+  filter/drop_debug:
+    logs:
+      exclude:
+        match_type: strict
+        severity_texts: ["DEBUG"]
+
+  # Prevent feedback loop — must run AFTER resourcedetection so container.name is populated.
+  filter/exclude_self:
+    logs:
+      exclude:
+        match_type: strict
+        resource_attributes:
+          - key: container.name
+            value: otel-agent
+
+  # ── Container exclusion ────────────────────────────────────────────────────
+  # Add any containers you do NOT want to collect logs from.
+  # Uses regexp match — add names to the pattern below.
+  #
+  # To add more: extend the regexp pattern with | separator.
+  # To disable: remove filter/exclude_containers from pipeline processors list.
+# -------------------- ไม่ดึง logs -------------------------------
+# เลือกว่าจะไม่ดึง log ของ container ตัวไหน ด้วยชื่อ
+#  filter/exclude_containers:
+#    logs:
+#      exclude:
+#        match_type: regexp
+#        resource_attributes:
+#          - key: container.name
+#            value: "^(gatus|prometheus|grafana|cadvisor|node-exporter|traefik)$"
+# -------------------- ยกเลิก comment ใน service ด้วย --------------------------
+
+  batch:
+    send_batch_size: 8192
+    timeout: 3s
+
+exporters:
+  otlp:
+    # OTel Gateway on main log-dashboard server.
+    endpoint: "10.135.4.67:4317"
+    tls:
+      insecure: true
+    compression: zstd
+
+service:
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - filter/exclude_self
+#        - filter/exclude_containers
+        - filter/drop_debug
+        - batch
+      exporters: [otlp]
+  telemetry:
+    logs:
+      level: warn

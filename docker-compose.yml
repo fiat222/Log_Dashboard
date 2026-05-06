@@ -4,6 +4,13 @@
 
 name: logdashboard
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    labels: "com.docker.compose.project,com.docker.compose.service"
+
 networks:
   pipeline_network:
     driver: bridge
@@ -17,42 +24,12 @@ volumes:
   clickhouse_data:
   clickhouse_logs:
   postgres_data:
-  backup_data:
 
 services:
 
-  # ── Traefik ────────────────────────────────────────────────────────────────
-  traefik:
-    #image: ${REGISTRY_IMAGE_PATH}/traefik:v3.0
-    image: traefik:v3.0
-    container_name: traefik
-    restart: unless-stopped
-    networks: [ pipeline_network ]
-    # ports:  # Production: disable Traefik dashboard external access
-    #   - "8443:443"
-    #   - "8090:8080"
-    volumes:
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.traefik-dashboard.rule=Host(`localhost`)"
-      - "traefik.http.routers.traefik-dashboard.service=api@internal"
-    healthcheck:
-      test: [ "CMD", "traefik", "healthcheck", "--ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # ── PostgreSQL (user management, roles, settings) ─────────────────────────
   postgres:
-    #image: ${REGISTRY_IMAGE_PATH}/postgres:16-alpine
-    image: postgres:16-alpine
+    image: ${REGISTRY_IMAGE_PATH}/postgres:16-alpine
     container_name: postgres
     restart: unless-stopped
     networks: [ pipeline_network ]
@@ -66,31 +43,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
-    #image: ${REGISTRY_IMAGE_PATH}/redis:7.2
-    image: redis:7.2
+    image: ${REGISTRY_IMAGE_PATH}/redis:7.2
     container_name: redis
     restart: unless-stopped
     networks: [ pipeline_network ]
-    ports:
-      - "6379:6379"
+    # No public port — internal access only
     volumes:
       - redis_data:/data
     command: >
-      redis-server --appendonly yes --appendfsync everysec --save 60 1000 --maxmemory 128mb --maxmemory-policy allkeys-lru --loglevel warning
+      redis-server --appendonly yes --appendfsync everysec --save 60 1000 --maxmemory 128mb --maxmemory-policy allkeys-lru --loglevel warning --requirepass ${REDIS_PASSWORD}
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
   # ── ClickHouse ────────────────────────────────────────────────────────────
   clickhouse:
-    #image: ${REGISTRY_IMAGE_PATH}/clickhouse-server:24.3-alpine
-    image: clickhouse/clickhouse-server:24.3-alpine
+    image: ${REGISTRY_IMAGE_PATH}/clickhouse-server:24.3-alpine
     container_name: clickhouse
     restart: unless-stopped
     networks: [ pipeline_network ]
@@ -101,7 +81,9 @@ services:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - backup_data:/var/lib/clickhouse/user_files/backups
+      - ./clickhouse/config.d/timezone.xml:/etc/clickhouse-server/config.d/timezone.xml:ro
+      - ./clickhouse/config.d/async_insert.xml:/etc/clickhouse-server/config.d/async_insert.xml:ro
+      - /mnt/Logstore_backup:/var/lib/clickhouse/user_files/backups
     env_file:
       - .env
     healthcheck:
@@ -110,66 +92,63 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
-  # ── Filebeat ───────────────────────────────────────────────────────────────
-  filebeat:
-    #image: ${REGISTRY_IMAGE_PATH}/filebeat:8.13.0
-    image: docker.elastic.co/beats/filebeat:8.13.0
-    container_name: filebeat
+  # ── Vector — Docker container log collector ───────────────────────────────
+  vector-containers:
+    image: ${REGISTRY_IMAGE_PATH}/vector:0.54.0-alpine
+    container_name: vector-containers
     restart: unless-stopped
-    networks: [ pipeline_network ]
     user: root
-    command: >
-      bash -c "cp /tmp/filebeat.yml /usr/share/filebeat/filebeat.yml && chmod go-w /usr/share/filebeat/filebeat.yml && filebeat -e -c /usr/share/filebeat/filebeat.yml"
-    volumes:
-      - ./filebeat.yml:/tmp/filebeat.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    environment:
-      - DOCKER_API_VERSION=1.44
-    env_file:
-      - .env
-    depends_on:
-      redis:
-        condition: service_healthy
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ── Log Ingester ───────────────────────────────────────────────────────────
-  log-ingester:
-    #image: ${REGISTRY_IMAGE_PATH}/ingester:latest
-    build: ./ingester
-    container_name: log-ingester
-    restart: unless-stopped
     networks: [ pipeline_network ]
+    volumes:
+      - ./vector/vector-containers.toml:/etc/vector/vector.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: [ "--config", "/etc/vector/vector.toml" ]
+    depends_on:
+      otel-gateway:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  # ── OTel Collector Gateway ─────────────────────────────────────────────────
+  otel-gateway:
+    image: ${REGISTRY_IMAGE_PATH}/otel-collector-contrib:0.100.0
+    container_name: otel-gateway
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    networks: [ pipeline_network ]
+    tmpfs:
+      - /tmp
+    ports:
+      - "8888:8888" # Prometheus metrics (meta-monitoring)
+      - "4318:4318" # OTLP/HTTP — Vector from external VMs
+      - "4317:4317" # OTLP/gRPC — Vector from external VMs
+    volumes:
+      - ./otel/gateway-config.yaml:/etc/otel/config.yaml:ro
+    command: [ "--config=/etc/otel/config.yaml" ]
     env_file:
       - .env
     depends_on:
-      redis:
-        condition: service_healthy
       clickhouse:
         condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "python3", "-c", "import os; exit(0)" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
   # ── FastAPI Backend ────────────────────────────────────────────────────────
   backend:
-    #image: ${REGISTRY_IMAGE_PATH}/backend:latest
+    image: ${REGISTRY_IMAGE_PATH}/backend:${TAG:-latest}
     build: ./backend
-    container_name: backend
+    container_name: log-backend
     restart: unless-stopped
     networks: [ pipeline_network ]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     env_file:
       - .env
     depends_on:
@@ -180,19 +159,17 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/logstore/api/auth/me" ]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--q", "http://localhost:8000/api/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
   # ── Log Dashboard (Nginx) ──────────────────────────────────────────────────
   log-dashboard:
-    #image: ${REGISTRY_IMAGE_PATH}/dashboard:latest
+    image: ${REGISTRY_IMAGE_PATH}/dashboard:${TAG:-latest}
     build:
       context: .
       dockerfile: dashboard/Dockerfile
@@ -200,27 +177,24 @@ services:
     restart: unless-stopped
     networks: [ pipeline_network ]
     ports:
-      #- "8801:80"
-      - "80:80"
+      - "8801:80"
     env_file:
       - .env
     depends_on:
       - backend
       - clickhouse
     healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://localhost/health" ]
+      test: [ "CMD", "wget", "-q", "http://localhost/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
 
   # ── Backup Cron Service ──────────────────────────────────────────────────
   backup:
-    #image: ${REGISTRY_IMAGE_PATH}/backup:latest
+    image: ${REGISTRY_IMAGE_PATH}/backup:${TAG:-latest}
     build: ./backup
     container_name: backup
     restart: unless-stopped
@@ -228,15 +202,18 @@ services:
     env_file:
       - .env
     volumes:
-      - backup_data:/backups
-      - backup_data:/clickhouse_user_files/backups
+      - /mnt/Logstore_backup:/backups
+      - /mnt/Logstore_backup:/clickhouse_user_files/backups
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+  # Prometheus, Grafana, Alertmanager, cAdvisor run on separate VM — not here.

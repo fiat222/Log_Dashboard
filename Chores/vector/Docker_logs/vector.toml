@@ -1,0 +1,83 @@
+[api]
+enabled = false
+
+# ======================
+# SOURCE — Docker container logs via Docker socket
+# Automatically provides: container_name, container_id, image, label.*
+# ======================
+[sources.docker_containers]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+exclude_containers = ["vector-containers"]
+# ── Container exclusion ───────────────────────────────────────────────────────
+# To exclude specific containers, add names to exclude_containers list above.
+# Example: exclude_containers = ["vector-containers", "prometheus", "node-exporter"]
+#
+# To whitelist instead (only collect listed containers), replace with:
+# include_containers = ["my-app", "my-other-app"]
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ======================
+# RESHAPE TO OTLP
+# ======================
+[transforms.to_otlp]
+type   = "remap"
+inputs = ["docker_containers"]
+source = '''
+  ts = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
+
+  container_name    = to_string(.container_name) ?? ""
+  compose_service   = to_string(.label."com.docker.compose.service") ?? container_name
+  compose_project   = to_string(.label."com.docker.compose.project") ?? ""
+  container_id      = to_string(.container_id) ?? ""
+  image             = to_string(.image) ?? ""
+  body              = to_string(.message) ?? ""
+  host, _           = get_hostname()
+
+  .resourceLogs = [{
+    "resource": {
+      "attributes": [
+        {"key": "container.name",                                  "value": {"stringValue": compose_service}},
+        {"key": "container.id",                                    "value": {"stringValue": container_id}},
+        {"key": "container.image.name",                            "value": {"stringValue": image}},
+        {"key": "service.name",                                    "value": {"stringValue": compose_service}},
+        {"key": "host.name",                                       "value": {"stringValue": host}},
+        {"key": "container.label.com.docker.compose.project",      "value": {"stringValue": compose_project}}
+      ]
+    },
+    "scopeLogs": [{
+      "logRecords": [{
+        "timeUnixNano": to_string(ts),
+        "body": {"stringValue": body},
+        "attributes": [
+          {"key": "log.iostream", "value": {"stringValue": to_string(.stream) ?? "stdout"}}
+        ]
+      }]
+    }]
+  }]
+
+  rl = .resourceLogs
+  . = {"resourceLogs": rl}
+'''
+
+# ======================
+# SINK — OTel Gateway
+# ======================
+[sinks.otel_gateway]
+type   = "http"
+inputs = ["to_otlp"]
+uri    = "http://10.135.4.67:4318/v1/logs"
+method = "post"
+
+[sinks.otel_gateway.encoding]
+codec = "json"
+
+[sinks.otel_gateway.framing]
+method = "bytes"
+
+[sinks.otel_gateway.batch]
+max_events  = 1000
+timeout_secs = 1
+
+[sinks.otel_gateway.request.headers]
+content-type = "application/json"

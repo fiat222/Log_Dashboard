@@ -1,42 +1,42 @@
 [api]
 enabled = false
 
+# ======================
+# SOURCE
+# ======================
 [sources.nginx_access]
 type = "file"
 include = ["/var/log/nginx/access.log"]
 read_from = "end"
 ignore_older_secs = 86400
 
+# ======================
+# PARSE & ENRICH
+# ======================
 [transforms.parse_and_enrich]
 type   = "remap"
 inputs = ["nginx_access"]
 source = '''
-  # 1. Parsing
   parsed, err = parse_json(.message)
   if err != null {
     parsed, err = parse_nginx_log(.message, format: "combined")
     if err != null {
-      parsed, err = parse_regex(.message, r'^(?P<client>[\d\.]+) - (?P<user>[^ ]+) \[(?P<time>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>\d+) (?P<size>\d+)')
+      parsed, err = parse_regex(.message, r'(?P<client>[0-9.]+) - (?P<user>\S+) \[(?P<time>[^\]]+)\] "(?P<request>[^"]+)" (?P<status>[0-9]+) (?P<size>[0-9]+)')
       if err != null {
-        msg, _ = to_string(.message)
-        log("Parse failed for line: " + msg, level: "debug")
         abort
       }
     }
   }
 
-  # 2. Merge
   . = merge!(., parsed)
 
-  # 3. Field Mapping
+  if exists(.referer) { .http_referer = .referer }
+
   if exists(.client) { .remote_addr = del(.client) }
   if exists(.agent)  { .user_agent  = del(.agent) }
 
-  # 4. Request parsing
   req, _ = to_string(.request)
-  if req == "" {
-    req, _ = to_string(.uri)
-  }
+  if req == "" { req, _ = to_string(.uri) }
 
   if req != "" {
     parts = split(req, " ")
@@ -46,7 +46,6 @@ source = '''
     del(.uri)
   }
 
-  # 5. Timestamp
   if exists(.time) {
     ts, err = parse_timestamp(.time, format: "%d/%b/%Y:%H:%M:%S %z")
     if err == null {
@@ -55,56 +54,103 @@ source = '''
       .timestamp = now()
     }
     del(.time)
-  } else if !exists(.timestamp) {
+  } else {
     .timestamp = now()
   }
 
-  # 6. Type Casting
-  .status = to_int(.status) ?? 0
-
-  val = .size
-  if val == null {
-    val = .bytes_sent
-  }
-  .bytes_sent = to_int(val) ?? 0
-
+  .status       = to_int(.status) ?? 0
+  .bytes_sent   = to_int(.size) ?? 0
   .request_time = to_float(.request_time) ?? 0.0
 
-  # 7. Metadata cleanup
-  p = .path
-  if p == null { p = "/" }
-
-  p_str, _ = to_string(p)
-  .path = replace(p_str, r'\?.*', "")
+  p, _ = to_string(.path)
+  parts = split(p, "?")
+  .path = get(parts, [0]) ?? p
 
   host, _ = get_hostname()
   .source_host = host
 
   del(.message)
-  del(.file)
-  del(.host)
 '''
 
+# ======================
+# FILTER
+# ======================
 [transforms.filter_noise]
 type = "filter"
 inputs = ["parse_and_enrich"]
 condition = '''
-path, _ = to_string(.path)
-!includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], path) &&
-!starts_with(path, "/static/") &&
-!starts_with(path, "/assets/")
-
+  path, _ = to_string(.path)
+  !includes(["/health", "/healthz", "/ping", "/ready", "/favicon.ico"], path)
 '''
 
-[sinks.redis_vm_log_dashboard]
-type = "redis"
+# ======================
+# RESHAPE TO OTLP FORMAT
+# ======================
+[transforms.to_otlp]
+type   = "remap"
 inputs = ["filter_noise"]
-url = "redis://${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
-key = "nginx"
-data_type = "list"
+source = '''
+  ts     = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
+  ts_str = to_string(ts)
 
-  [sinks.redis_vm_log_dashboard.list]
-  method = "rpush"
+  method  = to_string(.method)       ?? "GET"
+  path    = to_string(.path)         ?? "/"
+  status  = to_string(.status)       ?? "0"
+  bytes   = to_string(.bytes_sent)   ?? "0"
+  ua      = to_string(.user_agent)   ?? ""
+  ip      = to_string(.remote_addr)  ?? ""
+  host    = to_string(.source_host)  ?? ""
+  referer = to_string(.http_referer) ?? "-"
+  body    = method + " " + path + " " + status
 
-  [sinks.redis_vm_log_dashboard.encoding]
-  codec = "json"
+  .resourceLogs = [{
+    "resource": {
+      "attributes": [
+        {"key": "service.name",           "value": {"stringValue": "nginx"}},
+        {"key": "deployment.environment", "value": {"stringValue": "production"}},
+        {"key": "log.type",               "value": {"stringValue": "nginx_access"}},
+        {"key": "host.name",              "value": {"stringValue": host}}
+      ]
+    },
+    "scopeLogs": [{
+      "logRecords": [{
+        "timeUnixNano": ts_str,
+        "body": {"stringValue": body},
+        "attributes": [
+          {"key": "method",       "value": {"stringValue": method}},
+          {"key": "path",         "value": {"stringValue": path}},
+          {"key": "status",       "value": {"stringValue": status}},
+          {"key": "bytes_sent",   "value": {"stringValue": bytes}},
+          {"key": "user_agent",   "value": {"stringValue": ua}},
+          {"key": "remote_addr",  "value": {"stringValue": ip}},
+          {"key": "referer",      "value": {"stringValue": referer}},
+          {"key": "request_time", "value": {"stringValue": "0"}}
+        ]
+      }]
+    }]
+  }]
+
+  rl = .resourceLogs
+  . = {"resourceLogs": rl}
+'''
+
+# ======================
+# SINK
+# ======================
+[sinks.otel_gateway]
+type   = "http"
+inputs = ["to_otlp"]
+uri    = "http://10.135.4.67:4318/v1/logs"
+method = "post"
+
+[sinks.otel_gateway.encoding]
+codec = "json"
+
+[sinks.otel_gateway.framing]
+method = "bytes"
+
+[sinks.otel_gateway.batch]
+max_events = 1
+
+[sinks.otel_gateway.request.headers]
+content-type = "application/json"

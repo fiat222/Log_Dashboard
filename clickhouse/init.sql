@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS observability.otel_logs_local
     ContainerId         String                                  CODEC(ZSTD(1)),
     HostName            LowCardinality(String),
     Environment         LowCardinality(String)                  DEFAULT 'production',
+    ComposeProject      LowCardinality(String)                  DEFAULT '',
     _ttl_date           Date                                    DEFAULT toDate(Timestamp)
 )
 ENGINE = MergeTree()
@@ -54,9 +55,10 @@ SETTINGS index_granularity = 8192;
 
 -- Skip indexes
 ALTER TABLE observability.otel_logs_local
-    ADD INDEX IF NOT EXISTS idx_severity   SeverityText    TYPE set(10)                    GRANULARITY 4,
-    ADD INDEX IF NOT EXISTS idx_container  ContainerName   TYPE set(100)                   GRANULARITY 4,
-    ADD INDEX IF NOT EXISTS idx_body       Body            TYPE tokenbf_v1(32768, 3, 0)    GRANULARITY 4;
+    ADD INDEX IF NOT EXISTS idx_severity       SeverityText    TYPE set(10)                    GRANULARITY 4,
+    ADD INDEX IF NOT EXISTS idx_container      ContainerName   TYPE set(100)                   GRANULARITY 4,
+    ADD INDEX IF NOT EXISTS idx_body           Body            TYPE tokenbf_v1(32768, 3, 0)    GRANULARITY 4,
+    ADD INDEX IF NOT EXISTS idx_compose_project ComposeProject TYPE set(50)                    GRANULARITY 4;
 
 -- Materialized view: ingress (Null) → local (MergeTree)
 CREATE MATERIALIZED VIEW IF NOT EXISTS observability.otel_logs_mv
@@ -71,12 +73,13 @@ AS SELECT
     SpanId,
     ResourceAttributes,
     LogAttributes,
-    ResourceAttributes['container.name']                              AS ContainerName,
-    ResourceAttributes['container.image.name']                        AS ContainerImage,
-    ResourceAttributes['container.id']                               AS ContainerId,
-    ResourceAttributes['host.name']                                  AS HostName,
-    coalesce(ResourceAttributes['deployment.environment'], 'production') AS Environment,
-    toDate(Timestamp)                                                AS _ttl_date
+    ResourceAttributes['container.name']                                    AS ContainerName,
+    ResourceAttributes['container.image.name']                              AS ContainerImage,
+    ResourceAttributes['container.id']                                     AS ContainerId,
+    ResourceAttributes['host.name']                                        AS HostName,
+    coalesce(ResourceAttributes['deployment.environment'], 'production')   AS Environment,
+    coalesce(ResourceAttributes['container.label.com.docker.compose.project'], '') AS ComposeProject,
+    toDate(Timestamp)                                                      AS _ttl_date
 FROM observability.otel_logs_ingress;
 
 -- Query guardrails

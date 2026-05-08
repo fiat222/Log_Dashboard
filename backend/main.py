@@ -288,6 +288,26 @@ SPAM_DDOS_HIT_THRESHOLD = 6
 REQUEST_SPAM_THRESHOLD_PER_MIN = int(os.getenv("REQUEST_SPAM_THRESHOLD_PER_MIN", "120"))
 REQUEST_SPAM_ALERT_COOLDOWN_SEC = int(os.getenv("REQUEST_SPAM_ALERT_COOLDOWN_SEC", "120"))
 
+_NOTIF_INSERT_SQL = text(
+    "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
+    "VALUES (:type, :severity, :title, :message, :cid, :cname)"
+)
+
+async def _safe_notif_insert(params: dict) -> None:
+    """INSERT one notification row with deadlock retry (up to 3 attempts, exponential backoff)."""
+    for attempt in range(3):
+        try:
+            async with AsyncSessionLocal() as db:
+                await db.execute(_NOTIF_INSERT_SQL, params)
+                await db.commit()
+            return
+        except Exception as e:
+            if "deadlock" in str(e).lower() and attempt < 2:
+                await asyncio.sleep(0.05 * (2 ** attempt))
+                continue
+            log.warning("Failed to persist notification: %s", e)
+            return
+
 
 async def check_critical_logs():
     """Query ClickHouse for critical logs in last 2 minutes, broadcast if found."""
@@ -313,6 +333,7 @@ async def check_critical_logs():
                 rows = body.get("data", [])
 
         now = time.time()
+        pending_notifs: list[tuple[dict, dict]] = []  # (db_params, broadcast_payload)
         for row in rows:
             cid, cname, level, message, ts = row[0], row[1], row[2], row[3], row[4]
             for key, pattern, label in _compiled_patterns:
@@ -321,32 +342,27 @@ async def check_critical_logs():
                     if now - last < NOTIF_COOLDOWN_SEC:
                         continue
                     _last_notif_time[key] = now
-                    
-                    notif = {
-                        "id": int(now * 1000),
-                        "type": key,
-                        "severity": "critical",
-                        "title": f"🚨 {label}",
-                        "message": message[:200],
-                        "container_id": cid,
-                        "container_name": cname,
-                        "timestamp": ts,
-                    }
-                    
-                    # Persist to DB
-                    try:
-                        async with AsyncSessionLocal() as db:
-                            await db.execute(text(
-                                "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
-                                "VALUES (:type, :severity, :title, :message, :cid, :cname)"
-                            ), {"type": key, "severity": "critical", "title": notif["title"],
-                                "message": notif["message"], "cid": cid, "cname": cname})
-                            await db.commit()
-                    except Exception as e:
-                        log.warning("Failed to persist notification: %s", e)
-                    
-                    await broadcast_notification(notif)
+                    title = f"🚨 {label}"
+                    pending_notifs.append((
+                        {"type": key, "severity": "critical", "title": title,
+                         "message": message[:200], "cid": cid, "cname": cname},
+                        {"id": int(now * 1000), "type": key, "severity": "critical",
+                         "title": title, "message": message[:200],
+                         "container_id": cid, "container_name": cname, "timestamp": ts},
+                    ))
                     break  # one notif per row
+
+        # Batch INSERT all notifications in one session to avoid concurrent-session deadlocks
+        if pending_notifs:
+            try:
+                async with AsyncSessionLocal() as db:
+                    for db_params, _ in pending_notifs:
+                        await db.execute(_NOTIF_INSERT_SQL, db_params)
+                    await db.commit()
+            except Exception as e:
+                log.warning("Failed to persist notifications batch: %s", e)
+            for _, broadcast_payload in pending_notifs:
+                await broadcast_notification(broadcast_payload)
     except Exception as e:
         log.debug("check_critical_logs error: %s", e)
 
@@ -388,41 +404,38 @@ async def check_log_spam_anomalies():
         log.debug("check_log_spam_anomalies found %d candidate groups", len(rows))
 
         current_spam_keys: set[str] = set()
-        async with AsyncSessionLocal() as db:
-            for row in rows:
-                cid, cname, sample_msg, count, req_sec, ddos_hits, grp = row
-                notif_key = f"spam_{cid}_{grp}"
-                current_spam_keys.add(notif_key)
+        for row in rows:
+            cid, cname, sample_msg, count, req_sec, ddos_hits, grp = row
+            notif_key = f"spam_{cid}_{grp}"
+            current_spam_keys.add(notif_key)
 
-                # Alert once per active anomaly group; recover/reset when anomaly disappears.
-                if notif_key in _active_spam_alerts:
-                    continue
+            # Alert once per active anomaly group; recover/reset when anomaly disappears.
+            if notif_key in _active_spam_alerts:
+                continue
 
-                now = time.time()
-                if now - _last_notif_time.get(notif_key, 0) < NOTIF_COOLDOWN_SEC:
-                    continue
-                _last_notif_time[notif_key] = now
-                _active_spam_alerts.add(notif_key)
+            now = time.time()
+            if now - _last_notif_time.get(notif_key, 0) < NOTIF_COOLDOWN_SEC:
+                continue
+            _last_notif_time[notif_key] = now
+            _active_spam_alerts.add(notif_key)
 
-                ddos_note = "Likely DDOS/flood pattern." if int(ddos_hits or 0) > 0 else "Repeated spam pattern."
-                title = "🚨 Spam / DDOS Pattern Detected"
-                msg = (
-                    f"Container '{cname or cid}' is emitting abnormal volume: {req_sec} req/sec "
-                    f"({count}/min). {ddos_note} Sample: {str(sample_msg)[:120]}..."
-                )
+            ddos_note = "Likely DDOS/flood pattern." if int(ddos_hits or 0) > 0 else "Repeated spam pattern."
+            title = "🚨 Spam / DDOS Pattern Detected"
+            msg = (
+                f"Container '{cname or cid}' is emitting abnormal volume: {req_sec} req/sec "
+                f"({count}/min). {ddos_note} Sample: {str(sample_msg)[:120]}..."
+            )
 
-                await db.execute(text(
-                    "INSERT INTO notifications (type, severity, title, message, container_id, container_name) "
-                    "VALUES ('log_spam', 'critical', :title, :msg, :cid, :cname)"
-                ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
-                await db.commit()
-
-                await broadcast_notification({
-                    "type": "log_spam", "severity": "critical",
-                    "title": title, "message": msg, "container_id": cid, "container_name": cname,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-                log.info("Emitted log_spam for container=%s(%s) grp=%s count=%d", cname, cid, grp, count)
+            await _safe_notif_insert(
+                {"type": "log_spam", "severity": "critical", "title": title,
+                 "message": msg, "cid": cid, "cname": cname}
+            )
+            await broadcast_notification({
+                "type": "log_spam", "severity": "critical",
+                "title": title, "message": msg, "container_id": cid, "container_name": cname,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            log.info("Emitted log_spam for container=%s(%s) grp=%s count=%d", cname, cid, grp, count)
 
         # Reset state for groups that have recovered (so they can alert again later).
         _active_spam_alerts.difference_update(_active_spam_alerts - current_spam_keys)
@@ -503,112 +516,107 @@ async def check_container_downtime():
         now = time.time()
         down_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-        async with AsyncSessionLocal() as db:
-            for row in rows:
-                cid, cname, last_seen = row
-                display = cname or cid
+        for row in rows:
+            cid, cname, last_seen = row
+            display = cname or cid
 
-                # ── Parse timestamp ───────────────────────────────────────
-                if isinstance(last_seen, datetime):
-                    last_seen_dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-                else:
-                    txt = str(last_seen).strip().replace("Z", "+00:00").replace(" ", "T")
-                    try:
-                        last_seen_dt = datetime.fromisoformat(txt)
-                        if last_seen_dt.tzinfo is None:
-                            last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        log.debug("Invalid last_seen for container=%s: %s", cid, last_seen)
-                        continue
-
-                is_silent = last_seen_dt < down_threshold
-                is_currently_down = cid in _active_down_alerts
-
-                # ═══════════════════════════════════════════════════════════
-                # Case A: logs are flowing — container looks healthy
-                # ═══════════════════════════════════════════════════════════
-                if not is_silent:
-                    if is_currently_down:
-                        # State change: DOWN → UP
-                        # Confirm with docker exec before celebrating
-                        if await _is_container_running(display):
-                            _active_down_alerts.discard(cid)
-                            _pending_phase2.pop(cid, None)
-                            await _notify_recovered(db, cid, cname, last_seen)
-                        # else: logs resumed but exec says still down — rare edge
-                        # case, leave state as DOWN, will re-evaluate next tick
-                    else:
-                        # Normal active container — clear any stale phase-2 entry
-                        _pending_phase2.pop(cid, None)
+            # ── Parse timestamp ───────────────────────────────────────
+            if isinstance(last_seen, datetime):
+                last_seen_dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            else:
+                txt = str(last_seen).strip().replace("Z", "+00:00").replace(" ", "T")
+                try:
+                    last_seen_dt = datetime.fromisoformat(txt)
+                    if last_seen_dt.tzinfo is None:
+                        last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    log.debug("Invalid last_seen for container=%s: %s", cid, last_seen)
                     continue
 
-                # ═══════════════════════════════════════════════════════════
-                # Case B: silent container — run through the two-phase check
-                # ═══════════════════════════════════════════════════════════
+            is_silent = last_seen_dt < down_threshold
+            is_currently_down = cid in _active_down_alerts
 
-                # Already confirmed DOWN — just run phase-2 recovery check
+            # ═══════════════════════════════════════════════════════════
+            # Case A: logs are flowing — container looks healthy
+            # ═══════════════════════════════════════════════════════════
+            if not is_silent:
                 if is_currently_down:
-                    phase1_ts = _pending_phase2.get(cid)
-                    if phase1_ts and (now - phase1_ts) >= 300:
-                        _pending_phase2.pop(cid)
-                        if await _is_container_running(display):
-                            # Recovered between phase-1 and phase-2
-                            _active_down_alerts.discard(cid)
-                            await _notify_recovered(db, cid, cname, last_seen)
-                        # else: still down, state unchanged — no notification
-                    continue
+                    # State change: DOWN → UP
+                    # Confirm with docker exec before celebrating
+                    if await _is_container_running(display):
+                        _active_down_alerts.discard(cid)
+                        _pending_phase2.pop(cid, None)
+                        await _notify_recovered(cid, cname, last_seen)
+                    # else: logs resumed but exec says still down — rare edge
+                    # case, leave state as DOWN, will re-evaluate next tick
+                else:
+                    # Normal active container — clear any stale phase-2 entry
+                    _pending_phase2.pop(cid, None)
+                continue
 
-                # Waiting for phase-2 but not yet DOWN-notified — shouldn't
-                # normally happen, but guard against it
-                if cid in _pending_phase2:
-                    continue
+            # ═══════════════════════════════════════════════════════════
+            # Case B: silent container — run through the two-phase check
+            # ═══════════════════════════════════════════════════════════
 
-                # ── Phase 1: first time we see silence — docker exec check ─
-                log.info("Silence detected for container=%s, running phase-1 docker exec", display)
-                if await _is_container_running(display):
-                    # Container is running fine — just not emitting logs
-                    # Don't alert, don't set pending; re-evaluate next tick
-                    log.debug("container=%s is running but silent — skipping alert", display)
-                    continue
+            # Already confirmed DOWN — just run phase-2 recovery check
+            if is_currently_down:
+                phase1_ts = _pending_phase2.get(cid)
+                if phase1_ts and (now - phase1_ts) >= 300:
+                    _pending_phase2.pop(cid)
+                    if await _is_container_running(display):
+                        # Recovered between phase-1 and phase-2
+                        _active_down_alerts.discard(cid)
+                        await _notify_recovered(cid, cname, last_seen)
+                    # else: still down, state unchanged — no notification
+                continue
 
-                # Confirmed NOT running → transition to DOWN
-                _active_down_alerts.add(cid)
-                _pending_phase2[cid] = now  # schedule phase-2 in ~5 min
+            # Waiting for phase-2 but not yet DOWN-notified — shouldn't
+            # normally happen, but guard against it
+            if cid in _pending_phase2:
+                continue
 
-                title = "⚠️ Container Down"
-                msg = (
-                    f"Container '{display}' has stopped running "
-                    f"(confirmed via docker exec). Last log: {last_seen}."
-                )
-                log.info("DOWN alert: container=%s(%s)", display, cid)
-                await db.execute(text(
-                    "INSERT INTO notifications "
-                    "(type, severity, title, message, container_id, container_name) "
-                    "VALUES ('container_down', 'critical', :title, :msg, :cid, :cname)"
-                ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
-                await db.commit()
-                await broadcast_notification({
-                    "type": "container_down", "severity": "critical",
-                    "title": title, "message": msg,
-                    "container_id": cid, "container_name": cname,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+            # ── Phase 1: first time we see silence — docker exec check ─
+            log.info("Silence detected for container=%s, running phase-1 docker exec", display)
+            if await _is_container_running(display):
+                # Container is running fine — just not emitting logs
+                # Don't alert, don't set pending; re-evaluate next tick
+                log.debug("container=%s is running but silent — skipping alert", display)
+                continue
+
+            # Confirmed NOT running → transition to DOWN
+            _active_down_alerts.add(cid)
+            _pending_phase2[cid] = now  # schedule phase-2 in ~5 min
+
+            title = "⚠️ Container Down"
+            msg = (
+                f"Container '{display}' has stopped running "
+                f"(confirmed via docker exec). Last log: {last_seen}."
+            )
+            log.info("DOWN alert: container=%s(%s)", display, cid)
+            await _safe_notif_insert(
+                {"type": "container_down", "severity": "critical",
+                 "title": title, "message": msg, "cid": cid, "cname": cname}
+            )
+            await broadcast_notification({
+                "type": "container_down", "severity": "critical",
+                "title": title, "message": msg,
+                "container_id": cid, "container_name": cname,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
     except Exception as e:
         log.warning("check_container_downtime error: %s", e)
 
-async def _notify_recovered(db, cid: str, cname: str, last_seen):
-    """Send a single RECOVERED notification. Extracted to avoid duplication."""
+async def _notify_recovered(cid: str, cname: str, last_seen):
+    """Send a single RECOVERED notification."""
     display = cname or cid
     title = "✅ Container Recovered"
     msg = f"Container '{display}' is running again. Last log: {last_seen}."
     log.info("RECOVERED alert: container=%s(%s)", display, cid)
-    await db.execute(text(
-        "INSERT INTO notifications "
-        "(type, severity, title, message, container_id, container_name) "
-        "VALUES ('container_recovered', 'info', :title, :msg, :cid, :cname)"
-    ), {"title": title, "msg": msg, "cid": cid, "cname": cname})
-    await db.commit()
+    await _safe_notif_insert(
+        {"type": "container_recovered", "severity": "info",
+         "title": title, "message": msg, "cid": cid, "cname": cname}
+    )
     await broadcast_notification({
         "type": "container_recovered", "severity": "info",
         "title": title, "message": msg,
@@ -1714,7 +1722,7 @@ async def purge_data(req: PurgeRequest):
         where = f"ContainerName = '{req.name.replace(chr(39), chr(39)*2)}'"
     elif req.type == "stack":
         safe_name = req.name.replace(chr(39), chr(39)*2)
-        where = f"ResourceAttributes['container.label.com.docker.compose.project'] = '{safe_name}'"
+        where = f"ComposeProject = '{safe_name}'"
     else:
         raise HTTPException(400, "Invalid purge type")
 
@@ -1839,9 +1847,8 @@ async def delete_notification(
 
 @app.post("/api/notifications/clear")
 async def clear_notifications(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Mark all notifications as read or delete them (depending on UI preference)."""
-    # For now, let's keep the 'Mark all read' logic but add a real delete all if you want
-    await db.execute(text("UPDATE notifications SET read_at = now() WHERE read_at IS NULL"))
+    """Delete all notifications."""
+    await db.execute(text("DELETE FROM notifications"))
     await db.commit()
     return {"ok": True}
 
@@ -1951,7 +1958,7 @@ async def logs_stream(
                         parts.append(f"ContainerName IN ({safe})")
                     if compose_project:
                         safe_proj = compose_project.replace("'", "")
-                        parts.append(f"ResourceAttributes['container.label.com.docker.compose.project'] = '{safe_proj}'")
+                        parts.append(f"ComposeProject = '{safe_proj}'")
                     if level:
                         parts.append(f"SeverityText = '{level.replace(chr(39), '')}'")
                     if search:

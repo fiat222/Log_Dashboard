@@ -97,6 +97,9 @@
 
         <button id="btn-docs-mini" class="btn-icon-circle hidden" title="User Manual">📖</button>
 
+        <a id="btn-monitor-linked" class="btn-monitor-dashboard hidden" target="_blank" rel="noopener noreferrer"
+          href="https://monitor-eila.psu.ac.th/d/bdj6kr9wwl8u8f/overview-homepage?orgId=1&from=now-5m&to=now&timezone=browser&var-Filters=">📈
+          Monitor Dashboard</a>
         <div class="metric-card" id="m-total">
           <span class="metric-value">—</span>
           <span class="metric-label">Logs (24h)</span>
@@ -199,7 +202,7 @@
               </div>
               <div id="assign-selected-tags" class="export-tags" style="min-height:0;"></div>
               <button id="btn-assign-container" class="btn-primary"
-                style="width:10%; font-size:13px; padding:8px; font-weight:600;" disabled>Assign</button>
+                style="width:20%; font-size:13px; padding:8px; font-weight:600;" disabled>Assign</button>
             </div>
             <div id="ownership-list" class="admin-scroll-list">
               <div class="admin-empty">Select a user to view assignments</div>
@@ -221,7 +224,7 @@
                   Backs up PostgreSQL + ClickHouse. Older logs are cleared after backup completes.
                 </p>
                 <button id="btn-trigger-backup" class="btn-primary"
-                  style="width:40%; padding:8px; font-size:12px; font-weight:600;">
+                  style="width:35%; padding:8px; font-size:12px; font-weight:600;">
                   🚀 Start Backup
                 </button>
                 <div id="backup-status-banner"
@@ -452,6 +455,8 @@
           <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
             <span style="font-size:13px; font-weight:600; color:var(--text-dim);">Nginx Analytics</span>
             <select id="nginx-hours-select" style="font-size:12px; padding:2px 6px;">
+              <option value="0.0833">Last 5 min</option>
+              <option value="0.5">Last 30 min</option>
               <option value="1">Last 1 h</option>
               <option value="6">Last 6 h</option>
               <option value="24" selected>Last 24 h</option>
@@ -645,52 +650,46 @@
 
   <!-- Export Panel -->
   <div id="export-overlay" class="hidden">
-    <div class="modal" style="max-width:500px;">
-      <h2 style="font-size:16px; margin-bottom:12px;">⬇ Export Logs (JSV)</h2>
-      <div style="margin-bottom:16px;">
-        <label
-          style="font-size:11px; font-weight:600; text-transform:uppercase; display:block; margin-bottom:4px; color:var(--text-muted);">Stack
-          / Container</label>
-        <div style="position:relative;">
-          <input type="search" id="export-stack-search" placeholder="Search stacks or containers..." style="width:100%;"
-            autocomplete="off" />
-          <div id="export-stack-results" class="hidden"
-            style="position:absolute; top:100%; left:0; right:0; background:var(--bg-surface); border:1px solid var(--border); z-index:10; max-height:200px; overflow-y:auto;">
-          </div>
+    <div class="export-modal">
+      <div class="export-modal-header">
+        <div class="export-modal-title">
+          <span class="export-modal-icon">↓</span>
+          Export Logs
+          <span class="export-modal-badge">JSV</span>
         </div>
-        <div id="export-selected-tags" class="export-tags"></div>
+        <button id="btn-export-close" class="modal-close-btn" aria-label="Close">×</button>
       </div>
-      <div id="export-from" style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
-        <div>
-          <label style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">From</label>
-          <div class="custom-datetime">
-            <input id="export-from-date" type="date" />
-            <span class="dt-divider"></span>
-            <div class="time-select-group">
-              <div class="time-col"><select id="export-from-hour" class="time-select"></select></div>
-              <div class="time-col"><select id="export-from-minute" class="time-select"></select></div>
+      <div class="export-modal-body">
+        <div class="export-section">
+          <div class="export-section-label">Stack / Container</div>
+          <div style="position:relative;">
+            <input type="search" id="export-stack-search" placeholder="Search stacks or containers…" autocomplete="off" style="width:100%;" />
+            <div id="export-stack-results" class="hidden export-search-dropdown"></div>
+          </div>
+          <div id="export-selected-tags" class="export-tags"></div>
+        </div>
+        <div class="export-divider"></div>
+        <div class="export-section">
+          <div class="export-section-label">Time Range</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <div>
+              <label class="export-field-label">From</label>
+              <input id="export-from-dt" type="datetime-local" class="export-dt-input" />
+            </div>
+            <div>
+              <label class="export-field-label">To</label>
+              <input id="export-to-dt" type="datetime-local" class="export-dt-input" />
             </div>
           </div>
+          <label class="export-all-time-label">
+            <input type="checkbox" id="export-all-time" /> Export all time
+          </label>
         </div>
-        <div>
-          <label style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">To</label>
-          <div class="custom-datetime">
-            <input id="export-to-date" type="date" />
-            <span class="dt-divider"></span>
-            <div class="time-select-group">
-              <div class="time-col"><select id="export-to-hour" class="time-select"></select></div>
-              <div class="time-col"><select id="export-to-minute" class="time-select"></select></div>
-            </div>
-          </div>
+        <div id="export-status" class="hidden export-status-msg"></div>
+        <div class="export-modal-footer">
+          <button id="btn-export-cancel" class="btn-ghost">Cancel</button>
+          <button id="btn-export-confirm" class="btn-primary">⬇ Download JSV</button>
         </div>
-      </div>
-      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:20px; cursor:pointer;">
-        <input type="checkbox" id="export-all-time" /> Export all time
-      </label>
-      <div id="export-status" class="hidden" style="font-size:12px; margin-bottom:12px;"></div>
-      <div style="display:flex; justify-content:flex-end; gap:10px;">
-        <button id="btn-export-cancel" class="btn-ghost">Cancel</button>
-        <button id="btn-export-confirm" class="btn-primary">Download JSV</button>
       </div>
     </div>
   </div>

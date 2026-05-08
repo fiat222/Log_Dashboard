@@ -1,3 +1,7 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -22,24 +26,19 @@ processors:
     log_statements:
       - context: log
         statements:
-          # Infer severity from message content if not set
           - set(severity_text, "ERROR") where severity_text == "" and IsMatch(body, "(?i).*(error|fatal|panic|exception).*")
           - set(severity_text, "WARN") where severity_text == "" and IsMatch(body, "(?i).*(warn|warning).*")
           - set(severity_text, "DEBUG") where severity_text == "" and IsMatch(body, "(?i).*(debug|trace).*")
           - set(severity_text, "INFO") where severity_text == ""
-          # Docker compose service name
           - set(resource.attributes["container.name"], attributes["attrs"]["com.docker.compose.service"]) where attributes["attrs"] != nil
           - set(resource.attributes["container.label.com.docker.compose.project"], attributes["attrs"]["com.docker.compose.project"]) where attributes["attrs"] != nil
           - delete_key(attributes, "attrs")
           - set(resource.attributes["service.name"], resource.attributes["container.name"]) where resource.attributes["service.name"] == ""
 
   batch:
-    send_batch_size: 8192
-    timeout: 200ms
-
-  batch/traces:
-    send_batch_size: 1024
-    timeout: 3s
+    send_batch_size: 4096
+    send_batch_max_size: 8192
+    timeout: 500ms
 
 exporters:
   clickhouse:
@@ -53,27 +52,20 @@ exporters:
       initial_interval: 5s
       max_interval: 30s
       max_elapsed_time: 300s
-    # Persistent sending queue survives gateway restart
     sending_queue:
       enabled: true
       num_consumers: 4
       queue_size: 10000
-  debug:
-    verbosity: basic
 
 service:
+  extensions: [health_check]
   pipelines:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, filter, transform, batch]
       exporters: [clickhouse]
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch/traces]
-      exporters: [debug]
   telemetry:
     metrics:
-      # Exposes gateway's own metrics to Prometheus (meta-monitoring)
       address: 0.0.0.0:8888
     logs:
       level: warn

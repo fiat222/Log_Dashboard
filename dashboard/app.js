@@ -220,6 +220,10 @@ function applyRoleUI() {
   // Settings panel — admin + super_admin
   const settingsPanel = el("sidebar-settings");
   if (settingsPanel) settingsPanel.classList.toggle("hidden", !isAdmin);
+
+  // Monitor dashboard button — admin + super_admin only
+  const monitorBtn = el("btn-monitor-linked");
+  if (monitorBtn) monitorBtn.classList.toggle("hidden", !isAdmin);
 }
 
 el("btn-logout").addEventListener("click", async () => {
@@ -229,15 +233,21 @@ el("btn-logout").addEventListener("click", async () => {
 });
 
 // ── API helpers ───────────────────────────────────────────────────────────────
-async function apiQuery(sql) {
+async function apiQuery(sql, signal) {
   const res = await fetch(`${API_BASE}/query?q=${encodeURIComponent(sql)}`, {
-    credentials: "include"
+    credentials: "include",
+    signal,
   });
   if (res.status === 401) { window.location.href = "/logstore/login"; return []; }
   if (!res.ok) throw new Error(`Query failed (${res.status})`);
   const json = await res.json();
   return json.data || [];
 }
+
+let _logsAbortController = null;
+let _metricsAbortController = null;
+let _containerListAbortController = null;
+let _selectStackTimer = null;
 
 async function apiExec(sql) {
   const res = await fetch(`${API_BASE}/exec`, {
@@ -260,7 +270,7 @@ function buildWhere(includeStack = true) {
     const cnames = state.stackNames.map(c => `'${esc(c)}'`).join(",");
     parts.push(`ContainerName IN (${cnames})`);
     if (state.selectedProject) {
-      parts.push(`ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'`);
+      parts.push(`ComposeProject = '${esc(state.selectedProject)}'`);
     }
   }
   if (state.level) {
@@ -301,17 +311,20 @@ function buildWhere(includeStack = true) {
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
 async function loadMetrics() {
+  if (_metricsAbortController) _metricsAbortController.abort();
+  _metricsAbortController = new AbortController();
+  const { signal: metricsSig } = _metricsAbortController;
   try {
     const isError = "Body ILIKE '%ERR%' OR Body ILIKE '%ERROR%'";
     const isWarn = "Body ILIKE '%WARN%' OR Body ILIKE '%WARNING%' OR Body ILIKE '%WRN%'";
     const rows = await apiQuery(`
-      SELECT count(), 
+      SELECT count(),
              countIf(lower(SeverityText)='error' OR ${isError}),
              countIf((lower(SeverityText) IN ('warn', 'warning') OR ${isWarn}) AND NOT (${isError})),
              uniqExact(ContainerName)
       FROM observability.otel_logs_local
       WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName != 'nginx'
-    `);
+    `, metricsSig);
     if (rows.length) {
       const [total, errors, warnings, containers] = rows[0];
       el("m-total").querySelector(".metric-value").textContent = fmt(total);
@@ -319,7 +332,7 @@ async function loadMetrics() {
       el("m-warnings").querySelector(".metric-value").textContent = fmt(warnings);
       el("m-containers").querySelector(".metric-value").textContent = fmt(containers);
     }
-  } catch (e) { console.error("Metrics error:", e); }
+  } catch (e) { if (e.name !== "AbortError") console.error("Metrics error:", e); }
 }
 
 // ── Sidebar / Container List ──────────────────────────────────────────────────
@@ -355,21 +368,22 @@ let folderDataMap = {};
 let openStacks = new Set();   // tracks manually-opened stacks across re-renders
 
 async function loadContainerList() {
+  if (_containerListAbortController) _containerListAbortController.abort();
+  _containerListAbortController = new AbortController();
+  const { signal: clSig } = _containerListAbortController;
   try {
     const rows = await apiQuery(`
       SELECT ContainerName, max(Timestamp) AS last_seen,
              count() AS log_count, countIf(lower(SeverityText)='error') AS error_count,
-             if(ResourceAttributes['container.label.com.docker.compose.project'] != '',
-                ResourceAttributes['container.label.com.docker.compose.project'],
-                'Other') AS compose_project
+             if(ComposeProject != '', ComposeProject, 'Other') AS compose_project
       FROM observability.otel_logs_local
       WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName != 'nginx'
       GROUP BY ContainerName, compose_project
       ORDER BY compose_project ASC, last_seen DESC LIMIT 100
-    `);
+    `, clSig);
     lastSidebarRows = rows;
     renderSidebar();
-  } catch (e) { console.error("Container list error:", e); }
+  } catch (e) { if (e.name !== "AbortError") console.error("Container list error:", e); }
 }
 
 function renderSidebar() {
@@ -424,6 +438,18 @@ function renderSidebar() {
     return a.localeCompare(b);
   });
 
+  // Count how many folders each displayName appears in — duplicates get project suffix
+  const nameProjectCount = {};
+  Object.values(folderDataMap).forEach(({ items }) => {
+    const seen = new Set();
+    items.forEach(({ displayName }) => {
+      if (!seen.has(displayName)) {
+        seen.add(displayName);
+        nameProjectCount[displayName] = (nameProjectCount[displayName] || 0) + 1;
+      }
+    });
+  });
+
   sortedNames.forEach(stackName => {
     const group = document.createElement("div");
     const isActive = stackName === state.selectedStack;
@@ -457,7 +483,8 @@ function renderSidebar() {
         return;
       }
       stackItems.forEach(data => {
-        childrenContainer.appendChild(makeContainerItem(data.displayName, data.cname, data.dot, data.errorCount, data.project));
+        const isDupe = nameProjectCount[data.displayName] > 1;
+        childrenContainer.appendChild(makeContainerItem(data.displayName, data.cname, data.dot, data.errorCount, data.project, isDupe));
       });
       childrenContainer.removeAttribute("data-loaded");
     };
@@ -534,18 +561,24 @@ function renderSidebar() {
 function selectStack(stackName, containerNames, project = null) {
   state.selectedStack = stackName; state.stackNames = containerNames || []; state.selectedProject = project; state.page = 0;
   stopLogsSSE();
-  if (state.view === "logs") startLogsSSE();
-  loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
+  renderSidebar();
+  if (_selectStackTimer) clearTimeout(_selectStackTimer);
+  _selectStackTimer = setTimeout(() => {
+    if (state.view === "logs") startLogsSSE();
+    loadLogs();
+    if (state.view === "analytics") loadAnalytics();
+  }, 200);
 }
 
-function makeContainerItem(name, realName, dotClass, errorCount, project = null) {
+function makeContainerItem(name, realName, dotClass, errorCount, project = null, showProject = false) {
   const div = document.createElement("div");
   const isSelected = state.selectedStack === realName || state.selectedStack === name;
   const isAdmin = state.user?.role === "super_admin" || state.user?.role === "admin";
   div.className = "container-item" + (isSelected ? " active" : "");
+  const projectSuffix = showProject && project ? `<span class="c-project-tag">${escHtml(project)}</span>` : "";
   div.innerHTML = `
     ${dotClass ? `<span class="c-dot ${dotClass}"></span>` : `<span class="c-dot" style="background:var(--accent)"></span>`}
-    <span class="c-name">${escHtml(name)}</span>
+    <span class="c-name">${escHtml(name)}${projectSuffix}</span>
     ${errorCount > 0 ? `<span class="c-badge">${fmt(errorCount)}</span>` : ""}
     <div class="c-actions" style="margin-left:auto;display:flex;gap:4px;">
       ${isAdmin ? `<span class="c-purge" title="Permanently Delete Logs" style="cursor:pointer;font-size:10px;">🗑️</span>` : ""}
@@ -650,13 +683,17 @@ function openAddToStackModal(containerName) {
 
 // ── Log Table ─────────────────────────────────────────────────────────────────
 async function loadLogs() {
+  if (_logsAbortController) _logsAbortController.abort();
+  _logsAbortController = new AbortController();
+  const { signal } = _logsAbortController;
+
   const where = buildWhere();
   const offset = state.page * PAGE_SIZE;
   try {
     el("table-status").textContent = "Loading…";
     const [countRows, dataRows] = await Promise.all([
-      apiQuery(`SELECT count() FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx'`),
-      apiQuery(`SELECT Timestamp, ContainerName, SeverityText, Body, TraceId FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx' ORDER BY Timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`),
+      apiQuery(`SELECT count() FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx'`, signal),
+      apiQuery(`SELECT Timestamp, ContainerName, SeverityText, Body, TraceId FROM observability.otel_logs_local ${where} AND ServiceName != 'nginx' ORDER BY Timestamp ${state.sortDir} LIMIT ${PAGE_SIZE} OFFSET ${offset}`, signal),
     ]);
     state.totalRows = parseInt(countRows[0]?.[0] ?? 0, 10);
     const totalPages = Math.max(1, Math.ceil(state.totalRows / PAGE_SIZE));
@@ -664,8 +701,8 @@ async function loadLogs() {
     renderTable(dataRows);
     renderPagination(totalPages);
   } catch (e) {
-    el("table-status").textContent = "⚠ Query failed: " + e.message;
-    el("log-body").innerHTML = `<tr><td colspan="5" class="empty-state">Error loading logs.</td></tr>`;
+    if (e.name === "AbortError") return;
+    el("table-status").textContent = "⚠ Query failed: " + e.message + " (showing previous results)";
   }
 }
 
@@ -1088,11 +1125,33 @@ function stopNginxSSE() {
   setLiveBadge("nginx-table-status", false);
 }
 
+function nginxRowMatchesFilters([ts, , method, , path, status]) {
+  const statusFilter = el("nginx-status-select")?.value;
+  if (statusFilter && String(status) !== statusFilter) return false;
+  const methodFilter = el("nginx-method-select")?.value;
+  if (methodFilter && method !== methodFilter) return false;
+  const searchFilter = el("nginx-search-input")?.value?.trim();
+  if (searchFilter && !String(path).toLowerCase().includes(searchFilter.toLowerCase())) return false;
+  const fromDate = el("nginx-range-from-date")?.value;
+  if (fromDate) {
+    const from = new Date(`${fromDate}T${el("nginx-range-from-hour")?.value || "00"}:${el("nginx-range-from-minute")?.value || "00"}:00`);
+    if (new Date(ts) < from) return false;
+  }
+  const toDate = el("nginx-range-to-date")?.value;
+  if (toDate) {
+    const to = new Date(`${toDate}T${el("nginx-range-to-hour")?.value || "23"}:${el("nginx-range-to-minute")?.value || "59"}:59`);
+    if (new Date(ts) > to) return false;
+  }
+  return true;
+}
+
 function prependNginxRows(newRows) {
   const tbody = el("nginx-log-body");
   if (!tbody) return;
+  const filtered = newRows.filter(nginxRowMatchesFilters);
+  if (!filtered.length) return;
   if (tbody.querySelector(".empty-state")) tbody.innerHTML = "";
-  [...newRows].reverse().forEach(([ts, ip, method, referer, path, status, bytes, time]) => {
+  [...filtered].reverse().forEach(([ts, ip, method, referer, path, status, bytes, time]) => {
     const statusNum = parseInt(status) || 0;
     const cls = statusNum >= 500 ? "row-error" : statusNum >= 400 ? "row-warn" : "";
     const refStr = String(referer);
@@ -1103,7 +1162,7 @@ function prependNginxRows(newRows) {
     tbody.insertBefore(tr, tbody.firstChild);
   });
   while (tbody.rows.length > NGINX_PAGE_SIZE) tbody.deleteRow(tbody.rows.length - 1);
-  nginxTotalRows += newRows.length;
+  nginxTotalRows += filtered.length;
   const totalPages = Math.max(1, Math.ceil(nginxTotalRows / NGINX_PAGE_SIZE));
   const statusEl = el("nginx-table-status");
   if (statusEl) {
@@ -1316,10 +1375,10 @@ async function loadNginxTraffic() {
 async function loadNginxTopPaths() {
   try {
     const now = Date.now();
-    if (!_nginxPathsCache || now - _nginxPathsCache.ts > 60000) {
+    if (!_nginxPathsCache || _nginxPathsCache.hours !== nginxAnalyticsHours || now - _nginxPathsCache.ts > 60000) {
       const res = await fetch(`${API_BASE}/admin/nginx-logs/top-paths?hours=${nginxAnalyticsHours}&limit=15`, { credentials: "include" });
       if (!res.ok) return;
-      _nginxPathsCache = { data: await res.json(), ts: now };
+      _nginxPathsCache = { data: await res.json(), ts: now, hours: nginxAnalyticsHours };
     }
     const rows = _nginxPathsCache.data;
     const tbody = el("nginx-top-paths-body");
@@ -1342,10 +1401,10 @@ async function loadNginxTopPaths() {
 async function loadNginxTopIPs() {
   try {
     const now = Date.now();
-    if (!_nginxIPsCache || now - _nginxIPsCache.ts > 60000) {
+    if (!_nginxIPsCache || _nginxIPsCache.hours !== nginxAnalyticsHours || now - _nginxIPsCache.ts > 60000) {
       const res = await fetch(`${API_BASE}/admin/nginx-logs/top-ips?hours=${nginxAnalyticsHours}&limit=10`, { credentials: "include" });
       if (!res.ok) return;
-      _nginxIPsCache = { data: await res.json(), ts: now };
+      _nginxIPsCache = { data: await res.json(), ts: now, hours: nginxAnalyticsHours };
     }
     const rows = _nginxIPsCache.data;
     const container = el("nginx-top-ips-list");
@@ -1569,7 +1628,7 @@ async function loadAnalytics() {
   const hours = parseInt(el("analytics-hours-select")?.value || "24", 10);
   const interval = hours >= 168 ? "toStartOfDay" : hours >= 24 ? "toStartOfHour" : "toStartOfHour";
   const cidFilter = state.selectedStack && state.stackNames.length > 0
-    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ComposeProject = '${esc(state.selectedProject)}'` : ""}`
     : "";
   const section = el("analytics-section");
   section.classList.add("analytics-loading");
@@ -1651,7 +1710,7 @@ async function loadAnalytics() {
 
 async function updateSeverityDonut(fromDate, toDate) {
   const cidFilter = state.selectedStack && state.stackNames.length > 0
-    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ComposeProject = '${esc(state.selectedProject)}'` : ""}`
     : "";
   const fromTs = fromDate.replace("T", " ");
   const toTs = toDate.replace("T", " ");
@@ -1709,7 +1768,7 @@ async function loadAnalyticsSampleLogs() {
   panel.classList.remove("hidden");
   
   const cidFilter = state.selectedStack && state.stackNames.length > 0
-    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ResourceAttributes['container.label.com.docker.compose.project'] = '${esc(state.selectedProject)}'` : ""}`
+    ? `AND ContainerName IN (${state.stackNames.map(c => `'${esc(c)}'`).join(",")})${state.selectedProject ? ` AND ComposeProject = '${esc(state.selectedProject)}'` : ""}`
     : "";
   const lvlFilter = state.analyticsLevelFilter ? `AND lower(SeverityText)='${state.analyticsLevelFilter}'` : "";
   
@@ -1889,10 +1948,16 @@ function openExportPanel() {
     }));
   }
 
-  setCustomDateTime("export-from", getCustomDateTime("range-from"));
-  setCustomDateTime("export-to", getCustomDateTime("range-to"));
+  const fromVal = getCustomDateTime("range-from");
+  const toVal = getCustomDateTime("range-to");
+  el("export-from-dt").value = fromVal || "";
+  el("export-to-dt").value = toVal || "";
+  el("export-from-dt").disabled = false;
+  el("export-to-dt").disabled = false;
   el("export-all-time").checked = false;
-  el("export-status").classList.add("hidden");
+  const statusEl = el("export-status");
+  statusEl.className = "export-status-msg hidden";
+  statusEl.textContent = "";
 
   renderExportTags();
   el("export-overlay").classList.remove("hidden");
@@ -1966,10 +2031,8 @@ document.addEventListener("click", e => {
 
 el("export-all-time").addEventListener("change", () => {
   const checked = el("export-all-time").checked;
-  ["export-from-date", "export-from-hour", "export-from-minute",
-    "export-to-date", "export-to-hour", "export-to-minute"].forEach(id => {
-      const el2 = el(id); if (el2) el2.disabled = checked;
-    });
+  el("export-from-dt").disabled = checked;
+  el("export-to-dt").disabled = checked;
 });
 
 el("btn-export-confirm").addEventListener("click", async () => {
@@ -1981,8 +2044,8 @@ el("btn-export-confirm").addEventListener("click", async () => {
   if (exportSelectedContainers.length > 0)
     params.set("container_names", exportSelectedContainers.map(c => c.name).join(","));
 
-  const fromTs = getCustomDateTime("export-from");
-  const toTs = getCustomDateTime("export-to");
+  const fromTs = el("export-from-dt").value;
+  const toTs = el("export-to-dt").value;
 
   if (!allTime && fromTs)
     params.set("from_ts", fromTs.replace("T", " ") + ":00");
@@ -1992,7 +2055,7 @@ el("btn-export-confirm").addEventListener("click", async () => {
   btn.disabled = true;
   btn.textContent = "Preparing…";
   status.textContent = "⏳ Generating export…";
-  status.className = "export-status";
+  status.className = "export-status-msg";
   status.classList.remove("hidden");
 
   try {
@@ -2016,16 +2079,18 @@ el("btn-export-confirm").addEventListener("click", async () => {
     setTimeout(() => el("export-overlay").classList.add("hidden"), 3000);
   } catch (e) {
     status.textContent = "❌ Export failed: " + e.message;
-    status.style.color = "var(--error)";
+    status.classList.add("error");
   } finally {
     btn.disabled = false;
     btn.textContent = "⬇ Download JSV";
   }
 });
 
-el("btn-export-cancel").addEventListener("click", () => el("export-overlay").classList.add("hidden"));
+function closeExportPanel() { el("export-overlay").classList.add("hidden"); }
+el("btn-export-cancel").addEventListener("click", closeExportPanel);
+el("btn-export-close").addEventListener("click", closeExportPanel);
 el("export-overlay").addEventListener("click", e => {
-  if (e.target === el("export-overlay")) el("export-overlay").classList.add("hidden");
+  if (e.target === el("export-overlay")) closeExportPanel();
 });
 
 // ── Notifications (SSE) ───────────────────────────────────────────────────────
@@ -2287,22 +2352,28 @@ el("container-assign-search").addEventListener("input", () => {
 
   const matches = [];
   lastSidebarRows.forEach(row => {
-    const [cname] = row;
-    if (ownedIds.includes(cname) || assignSelectedContainers.find(c => c.id === cname)) return;
+    const [cname, , , , rawProject] = row;
+    if (ownedIds.includes(cname) || assignSelectedContainers.find(c => c.id === cname && c.project === (rawProject || ""))) return;
     if (cname.toLowerCase().includes(q)) {
-      matches.push({ type: "container", label: `📦 ${cname}`, id: cname, name: cname });
+      matches.push({ type: "container", id: cname, name: cname, project: rawProject || "" });
     }
   });
+
+  // detect duplicate container names across different projects
+  const nameCounts = {};
+  matches.forEach(m => { nameCounts[m.name] = (nameCounts[m.name] || 0) + 1; });
 
   if (!matches.length) { results.innerHTML = `<div class="export-no-result">No matches</div>`; results.classList.remove("hidden"); return; }
 
   results.innerHTML = "";
   matches.slice(0, 10).forEach(m => {
+    const isDupe = nameCounts[m.name] > 1;
+    const displayLabel = isDupe && m.project ? `${m.name} (${m.project})` : m.name;
     const item = document.createElement("div");
     item.className = "export-result-item";
-    item.textContent = m.label;
+    item.textContent = `📦 ${displayLabel}`;
     item.addEventListener("click", () => {
-      assignSelectedContainers.push({ id: m.id, label: m.name });
+      assignSelectedContainers.push({ id: m.id, label: displayLabel, project: m.project });
       renderAssignTags();
       el("container-assign-search").value = "";
       results.classList.add("hidden");
@@ -2708,11 +2779,11 @@ function init() {
     const hourOpts = `<option value="">HH</option>` + hours.map(v => `<option value="${v}">${v}</option>`).join("");
     const minOpts = `<option value="">MM</option>` + mins.map(v => `<option value="${v}">${v}</option>`).join("");
 
-    ["range-from-hour", "range-to-hour", "export-from-hour", "export-to-hour"].forEach(id => {
+    ["range-from-hour", "range-to-hour"].forEach(id => {
       const target = el(id);
       if (target) target.innerHTML = hourOpts;
     });
-    ["range-from-minute", "range-to-minute", "export-from-minute", "export-to-minute"].forEach(id => {
+    ["range-from-minute", "range-to-minute"].forEach(id => {
       const target = el(id);
       if (target) target.innerHTML = minOpts;
     });

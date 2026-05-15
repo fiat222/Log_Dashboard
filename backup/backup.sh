@@ -1,12 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# Backup Script for PostgreSQL and ClickHouse
+# Backup Script for ClickHouse
 # =============================================================================
-set -e
 
 BACKUP_DIR="/backups"
 DATE=$(date +"%Y%m%d_%H%M%S")
-PG_FILE="$BACKUP_DIR/pg_logdash_$DATE.sql.gz"
 
 echo "============================================="
 echo "[$(date)] Starting Backup Process"
@@ -18,17 +16,7 @@ if [ ! -w "$BACKUP_DIR" ]; then
     exit 1
 fi
 
-# 1. PostgreSQL Backup
-echo "-> Backing up PostgreSQL database..."
-# ใช้ PGPASSWORD จาก env direct เพื่อความปลอดภัย
-if PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" | gzip > "$PG_FILE"; then
-    echo "  [OK] Saved PostgreSQL backup to: $PG_FILE"
-else
-    echo "  [FAIL] PostgreSQL backup failed!"
-    # ไม่ exit ทันที เพื่อพยายามทำ ClickHouse ต่อ
-fi
-
-# 2. ClickHouse Backup
+# 1. ClickHouse Backup
 echo "-> Backing up ClickHouse logs..."
 CH_BACKUP_NAME="ch_observability_$DATE"
 # หมายเหตุ: ClickHouse จะสร้างไฟล์ในโฟลเดอร์ที่ถูก Mount ไว้ (เช่น /var/lib/clickhouse/backups/)
@@ -76,17 +64,17 @@ else
         exit 1
     fi
 
-    # 3. Compress ClickHouse Raw Data
+    # 2. Compress ClickHouse Raw Data
     echo "-> Compressing ClickHouse backup..."
     CH_TGZ="$BACKUP_DIR/$CH_BACKUP_NAME.tar.gz"
-    
+
     # ค้นหาโฟลเดอร์ที่ ClickHouse สร้างขึ้น (ป้องกันเรื่อง Path ซ้อน)
     ACTUAL_DIR=$(find "$BACKUP_DIR" -maxdepth 1 -name "$CH_BACKUP_NAME*" -type d | head -n 1)
 
     if [ -n "$ACTUAL_DIR" ] && [ -d "$ACTUAL_DIR" ]; then
         # บีบอัดโดยเข้าไปที่โฟลเดอร์ backup ก่อนเพื่อให้ข้างในไฟล์ .tar.gz ไม่ติด Path เต็มไป
         tar -czf "$CH_TGZ" -C "$BACKUP_DIR" "$(basename "$ACTUAL_DIR")"
-        
+
         # ลบโฟลเดอร์ดิบออกหลังจากบีบอัดเสร็จ
         rm -rf "$ACTUAL_DIR"
         echo "  [OK] Compressed ClickHouse backup to: $CH_TGZ"
@@ -97,7 +85,7 @@ else
     fi
 fi
 
-# 4. Cleanup old backups (Optional - ปิดไว้ตามที่แจ้ง)
+# 3. Cleanup old backups (Optional - ปิดไว้ตามที่แจ้ง)
 # echo "-> Cleaning up files older than 7 days..."
 # find "$BACKUP_DIR" -type f -mtime +7 -name "*.gz" -exec rm -f {} \;
 # echo "  [OK] Cleanup complete."

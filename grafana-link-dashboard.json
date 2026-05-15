@@ -1,0 +1,79 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "9.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "text",
+      "name": "Text",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "Quick link to the Container Logs Dashboard",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Open Logs Dashboard",
+      "tooltip": "Open Container Logs Dashboard",
+      "type": "link",
+      "url": "https://monitor-eila.psu.ac.th/logstore/"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": null,
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;\">\n  <a href=\"https://monitor-eila.psu.ac.th/logstore/\" target=\"_blank\" style=\"display:inline-block;padding:16px 32px;background:#F46800;color:#fff;font-size:16px;font-weight:600;border-radius:6px;text-decoration:none;letter-spacing:0.5px;\">Open Container Logs Dashboard ↗</a>\n</div>",
+        "mode": "html"
+      },
+      "pluginVersion": "9.0.0",
+      "title": "Container Logs Dashboard",
+      "transparent": false,
+      "type": "text"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "tags": ["logs", "container"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Container Logs Dashboard",
+  "uid": "logs-dashboard-link",
+  "version": 1
+}

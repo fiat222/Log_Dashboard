@@ -87,7 +87,6 @@ CREATE SETTINGS PROFILE IF NOT EXISTS viewer_profile
     SETTINGS max_execution_time = 30,
              max_memory_usage = 2000000000,
              max_rows_to_read = 500000000,
-             readonly = 1,
              session_timezone = 'Asia/Bangkok';
 
 -- Assign query guardrails to loguser

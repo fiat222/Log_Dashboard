@@ -163,7 +163,8 @@ INIT_STMTS = [
         ('dot_amber_threshold_sec', '300'),
         ('active_color_green', '#059669'),
         ('active_color_amber', '#d97706'),
-        ('active_color_red', '#e11d48')
+        ('active_color_red', '#e11d48'),
+        ('backup_hour_utc', '20')
     ON CONFLICT (key) DO NOTHING
     """,
     """
@@ -826,8 +827,12 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_container_downtime, "interval", seconds=60, id="downtime_checker")
     # แม็พ Container จาก Registry เข้ากับ SSO Users แบบอัตโนมัติ
     scheduler.add_job(check_and_assign_containers, "interval", minutes=2, id="auto_assign_checker")
-    # Auto Backup + Clear: every 5 days at 03:00
-    scheduler.add_job(auto_backup_and_clear, "cron", hour=3, minute=0, day="*/5", id="auto_backup_clear")
+    # Auto Backup + Clear: every 5 days at configured hour (default 20 UTC = 03:00 Bangkok)
+    async with AsyncSessionLocal() as _s:
+        _r = await _s.execute(text("SELECT value FROM settings WHERE key='backup_hour_utc'"))
+        _row = _r.fetchone()
+        _bh = int(_row[0]) if _row else 20
+    scheduler.add_job(auto_backup_and_clear, "cron", hour=_bh, minute=0, day="*/5", id="auto_backup_clear")
 
     scheduler.start()
     log.info("Scheduler started — checking logs and container health")
@@ -1194,7 +1199,7 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
             return {"data": [], "rows": 0}
         
         cname_list = ",".join(f"'{c}'" for c in owned)
-        filter_clause = f" container_name IN ({cname_list})"
+        filter_clause = f" ContainerName IN ({cname_list})"
 
         upper_q = q.upper()
         keywords = [" GROUP BY ", " ORDER BY ", " LIMIT ", " FORMAT "]
@@ -1790,6 +1795,13 @@ async def update_setting(
                         log.warning("ClickHouse TTL alter failed: %s", body[:200])
         except Exception:
             log.exception("Failed to apply TTL to ClickHouse")
+
+    elif req.key == "backup_hour_utc":
+        try:
+            h = int(req.value) % 24
+            scheduler.reschedule_job("auto_backup_clear", trigger="cron", hour=h, minute=0, day="*/5")
+        except Exception:
+            log.exception("Failed to reschedule backup job")
 
     return {"ok": True}
 

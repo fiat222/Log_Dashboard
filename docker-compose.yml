@@ -22,7 +22,6 @@ volumes:
   redis_data:
   clickhouse_data:
   clickhouse_logs:
-  postgres_data:
 
 services:
 
@@ -44,31 +43,6 @@ services:
       POST: "0"
     security_opt:
       - no-new-privileges:true
-    logging: *default-logging
-
-  # ── PostgreSQL (user management, roles, settings) ─────────────────────────
-  postgres:
-    image: ${REGISTRY_IMAGE_PATH}/postgres:16-alpine
-    container_name: postgres
-    restart: unless-stopped
-    networks: [ pipeline_network ]
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    env_file:
-      - .env
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U loguser -d logdash" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: "0.5"
     logging: *default-logging
 
   # ── Redis ──────────────────────────────────────────────────────────────────
@@ -200,8 +174,6 @@ services:
     env_file:
       - .env
     depends_on:
-      postgres:
-        condition: service_healthy
       clickhouse:
         condition: service_healthy
       redis:
@@ -266,8 +238,30 @@ services:
     volumes:
       - /mnt/Logstore_backup:/backups
     depends_on:
-      postgres:
+      clickhouse:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging: *default-logging
+  # ── ClickHouse UI ─────────────────────────────────────────────────────────
+  ch-ui:
+    image: ${REGISTRY_IMAGE_PATH}/ch-ui:latest
+    container_name: ch-ui
+    restart: unless-stopped
+    networks: [ pipeline_network ]
+    environment:
+      VITE_CLICKHOUSE_URL: https://monitor-eila.psu.ac.th/logstore/ch-api
+      VITE_CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      VITE_CLICKHOUSE_PASS: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
       clickhouse:
         condition: service_healthy
     security_opt:

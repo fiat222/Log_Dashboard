@@ -1,7 +1,7 @@
 FROM alpine:3.19
 
 # Schedule lives in backend (APScheduler). Container is just a triggered worker.
-RUN apk add --no-cache postgresql16-client curl bash tar tzdata python3 \
+RUN apk add --no-cache curl bash tar tzdata python3 \
     && rm -rf /var/cache/apk/*
 ENV TZ=Asia/Bangkok
 

@@ -93,6 +93,7 @@ function ansiToHtml(str) {
   const closeStrong = (result.match(/<\/strong/g) || []).length;
   for (let i = 0; i < openStrong - closeStrong; i++) result += "</strong>";
 
+  result = result.replace(/\n/g, "<br>");
   return result;
 }
 
@@ -224,6 +225,10 @@ function applyRoleUI() {
   // Monitor dashboard button — admin + super_admin only
   const monitorBtn = el("btn-monitor-linked");
   if (monitorBtn) monitorBtn.classList.toggle("hidden", !isAdmin);
+
+  // ClickHouse UI button — admin + super_admin only
+  const chBtn = el("btn-clickhouse-linked");
+  if (chBtn) chBtn.classList.toggle("hidden", !isAdmin);
 }
 
 el("btn-logout").addEventListener("click", async () => {
@@ -2434,6 +2439,7 @@ async function loadSettings() {
 
     // Populate settings inputs
     if (el("setting-ttl")) el("setting-ttl").value = state.settings.ttl_days || "90";
+    if (el("setting-backup-hour")) el("setting-backup-hour").value = state.settings.backup_hour_utc || "20";
     if (el("setting-green")) el("setting-green").value = state.settings.dot_green_threshold_sec || "60";
     if (el("setting-amber")) el("setting-amber").value = state.settings.dot_amber_threshold_sec || "300";
     if (el("setting-color-green")) el("setting-color-green").value = state.settings.active_color_green || "#059669";
@@ -2448,8 +2454,10 @@ document.querySelectorAll(".btn-save-setting").forEach(btn => {
     const val = el(inputId).value;
     try {
       btn.textContent = "⌛";
-      await fetch(`${API_BASE}/settings?key=${key}&value=${encodeURIComponent(val)}`, {
-        method: "POST", credentials: "include"
+      await fetch(`${API_BASE}/settings`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value: val })
       });
       btn.textContent = "✅";
       setTimeout(() => btn.textContent = "Save", 1500);
@@ -2716,8 +2724,8 @@ async function loadBackupHistory() {
       if (r.id > (state.lastBackupId || 0)) state.lastBackupId = r.id;
       return `<tr class="${rowClass}" style="border-bottom:1px solid var(--border);">
         <td style="padding:4px 6px; text-align:right; color:var(--text-muted);">${r.id}</td>
-        <td style="padding:4px 6px; color:var(--text-dim);">${r.started_at ? formatTs(r.started_at).slice(11, 19) : "—"}</td>
-        <td style="padding:4px 6px; color:var(--text-muted);">${r.finished_at ? formatTs(r.finished_at).slice(11, 19) : "—"}</td>
+        <td style="padding:4px 6px; color:var(--text-dim);">${r.started_at ? formatTs(r.started_at) : "—"}</td>
+        <td style="padding:4px 6px; color:var(--text-muted);">${r.finished_at ? formatTs(r.finished_at) : "—"}</td>
         <td style="padding:4px 6px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(r.databases)}">${escHtml(r.databases)}</td>
         <td style="padding:4px 6px;">
           <span style="font-size:10px; font-weight:600; color:${statusColor};">${statusIcon} ${escHtml(r.status)}</span>

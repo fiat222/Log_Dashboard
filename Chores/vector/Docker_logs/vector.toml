@@ -9,6 +9,10 @@ enabled = false
 type = "docker_logs"
 docker_host = "unix:///var/run/docker.sock"
 exclude_containers = ["vector-containers"]
+multiline.start_pattern = "^\\S"
+multiline.condition_pattern = "^\\S"
+multiline.mode = "continue_through"
+multiline.timeout_ms = 2000
 # ── Container exclusion ───────────────────────────────────────────────────────
 # To exclude specific containers, add names to exclude_containers list above.
 # Example: exclude_containers = ["vector-containers", "prometheus", "node-exporter"]
@@ -18,11 +22,20 @@ exclude_containers = ["vector-containers"]
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ======================
+[transforms.multiline_merge]
+type            = "reduce"
+inputs          = ["docker_containers"]
+group_by        = ["container_id", "stream"]
+expire_after_ms = 2000
+flush_period_ms = 1000
+merge_strategies.message = "concat_newline"
+
+# ======================
 # RESHAPE TO OTLP
 # ======================
 [transforms.to_otlp]
 type   = "remap"
-inputs = ["docker_containers"]
+inputs = ["multiline_merge"]
 source = '''
   ts = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
 

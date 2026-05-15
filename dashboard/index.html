@@ -63,6 +63,38 @@
               style="padding:2px 6px; font-size:10px;">Save</button>
           </div>
           <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label>Backup Time</label>
+            <select id="setting-backup-hour"
+              style="padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);">
+              <option value="17">00:00</option>
+              <option value="18">01:00</option>
+              <option value="19">02:00</option>
+              <option value="20">03:00</option>
+              <option value="21">04:00</option>
+              <option value="22">05:00</option>
+              <option value="23">06:00</option>
+              <option value="0">07:00</option>
+              <option value="1">08:00</option>
+              <option value="2">09:00</option>
+              <option value="3">10:00</option>
+              <option value="4">11:00</option>
+              <option value="5">12:00</option>
+              <option value="6">13:00</option>
+              <option value="7">14:00</option>
+              <option value="8">15:00</option>
+              <option value="9">16:00</option>
+              <option value="10">17:00</option>
+              <option value="11">18:00</option>
+              <option value="12">19:00</option>
+              <option value="13">20:00</option>
+              <option value="14">21:00</option>
+              <option value="15">22:00</option>
+              <option value="16">23:00</option>
+            </select>
+            <button class="btn-save-setting btn-secondary" data-key="backup_hour_utc" data-src="setting-backup-hour"
+              style="padding:2px 6px; font-size:10px;">Save</button>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
             <label>Green < N sec</label>
                 <input type="number" id="setting-green" min="5" max="3600"
                   style="width:50px; padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);" />
@@ -100,6 +132,9 @@
         <a id="btn-monitor-linked" class="btn-monitor-dashboard hidden" target="_blank" rel="noopener noreferrer"
           href="https://monitor-eila.psu.ac.th/d/bdj6kr9wwl8u8f/overview-homepage?orgId=1&from=now-5m&to=now&timezone=browser&var-Filters=">📈
           Monitor Dashboard</a>
+        <a id="btn-clickhouse-linked" class="btn-monitor-dashboard hidden" target="_blank" rel="noopener noreferrer"
+          href="https://monitor-eila.psu.ac.th/logstore/clickhouse">🗄
+          ClickHouse</a>
         <div class="metric-card" id="m-total">
           <span class="metric-value">—</span>
           <span class="metric-label">Logs (24h)</span>
@@ -247,10 +282,10 @@
                           style="padding:4px 6px; text-align:right; color:var(--text-muted); font-weight:600; width:30px;">
                           #</th>
                         <th
-                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:65px;">
+                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:140px;">
                           Started</th>
                         <th
-                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:65px;">
+                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:140px;">
                           Finished</th>
                         <th style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600;">DBs</th>
                         <th

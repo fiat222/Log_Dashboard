@@ -325,7 +325,7 @@ Without this, ch-ui's SQLite auth database is lost on every container recreate.
 
 | Layer | Old | New |
 |-------|-----|-----|
-| Collector | Filebeat 8.13 | OTel Collector Agent (contrib 0.100.0) |
+| Collector | Filebeat 8.13 | Vector Agent |
 | Buffer | Redis (log pipeline) | OTel Gateway in-memory batch queue |
 | Ingester | Python clickhouse-connect service | OTel Gateway ClickHouse exporter |
 | Nginx logs | Vector → Redis → Python BLPOP → CH | Vector → OTel Gateway → CH |

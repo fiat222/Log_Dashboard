@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     user: root
     command: [ "--config", "/etc/vector/vector.toml" ]
+    networks:
+      vector:
+        ipv4_address: 10.0.x.x
     volumes:
       - ./vector.toml:/etc/vector/vector.toml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -13,3 +16,9 @@ services:
       options:
         max-size: "10m"
         max-file: "1"
+
+networks:
+    vector:
+      driver: bridge
+      ipam:
+       - subnet: 10.0.x.x/24

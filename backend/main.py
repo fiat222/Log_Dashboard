@@ -717,11 +717,15 @@ async def _run_backup() -> bool:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "http://backup:8080/trigger",
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=660),  # wait for backup.sh to finish
             ) as resp:
-                return resp.status == 200
+                if resp.status != 200:
+                    body = await resp.text()
+                    log.error("Backup script failed: %s", body)
+                    return False
+                return True
     except Exception as e:
-        log.error(f"Backup trigger failed: {e}")
+        log.error("Backup trigger failed: %s", e)
         return False
 
 

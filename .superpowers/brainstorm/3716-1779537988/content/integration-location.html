@@ -1,0 +1,111 @@
+<h2>Where does the Catalog live?</h2>
+<p class="subtitle">Three ways to integrate into the existing Log Dashboard</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>New Tab (inside existing dashboard)</h3>
+      <p>Add "Catalog" as a 6th tab alongside Logs, Analytics, Nginx, Patterns, Admin. Same URL, same auth, same layout.</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">Log Dashboard</div>
+        <div class="mockup-body" style="padding:0;">
+          <div style="display:flex; border-bottom:1px solid var(--border); padding:0 8px; gap:2px;">
+            <div style="padding:6px 10px; color:var(--text-muted); font-size:10px;">Logs</div>
+            <div style="padding:6px 10px; color:var(--text-muted); font-size:10px;">Analytics</div>
+            <div style="padding:6px 10px; color:var(--text-muted); font-size:10px;">Nginx</div>
+            <div style="padding:6px 10px; color:var(--text-muted); font-size:10px;">Patterns</div>
+            <div style="padding:6px 10px; color:var(--text-muted); font-size:10px;">Admin</div>
+            <div style="padding:6px 10px; color:var(--accent); font-size:10px; border-bottom:2px solid var(--accent); font-weight:600;">🗂️ Catalog</div>
+          </div>
+          <div style="padding:10px; display:flex; gap:6px; flex-wrap:wrap;">
+            <div style="border:1px solid var(--border);border-radius:5px;padding:8px;flex:1;min-width:120px;">
+              <div style="font-weight:600;font-size:11px;">Admission</div>
+              <div style="font-size:10px;color:var(--text-muted);">admission · ธนพล</div>
+              <div style="margin-top:4px;font-size:10px;color:#22c55e;">● Running</div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:5px;padding:8px;flex:1;min-width:120px;">
+              <div style="font-weight:600;font-size:11px;">Backend API</div>
+              <div style="font-size:10px;color:var(--text-muted);">log-dashboard · ธนพล</div>
+              <div style="margin-top:4px;font-size:10px;color:#22c55e;">● Running</div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:5px;padding:8px;flex:1;min-width:120px;">
+              <div style="font-weight:600;font-size:11px;">Registration</div>
+              <div style="font-size:10px;color:var(--text-muted);">registration · สมชาย</div>
+              <div style="margin-top:4px;font-size:10px;color:#ef4444;">● Error</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Zero new infra</li><li>Same auth/session</li><li>Least code change</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Tab bar gets crowded (6 tabs)</li><li>Catalog context feels cramped</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Separate Page / Route</h3>
+      <p>Catalog at <code>/logstore/catalog/</code> — its own full-page layout like the Backstage mockup. Linked from the sidebar or a nav button in the main dashboard.</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">monitor-eila.psu.ac.th/logstore/catalog/</div>
+        <div class="mockup-body" style="display:flex; gap:0; padding:0; height:90px; overflow:hidden;">
+          <div style="width:80px; background:var(--bg-elevated); padding:8px; font-size:9px; border-right:1px solid var(--border);">
+            <div style="color:var(--accent); font-weight:700; margin-bottom:6px;">Catalog</div>
+            <div style="color:var(--text-muted); padding:3px 0;">🗂️ Services</div>
+            <div style="color:var(--text-muted); padding:3px 0;">📦 Stacks</div>
+            <div style="color:var(--text-muted); padding:3px 0;">← Log Dashboard</div>
+          </div>
+          <div style="flex:1; padding:8px;">
+            <div style="font-weight:600; margin-bottom:6px;">Service Catalog</div>
+            <div style="display:flex; gap:4px; flex-wrap:wrap;">
+              <div style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:10px;"><span style="color:#22c55e;">●</span> Admission</div>
+              <div style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:10px;"><span style="color:#22c55e;">●</span> Backend API</div>
+              <div style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:10px;"><span style="color:#ef4444;">●</span> Registration</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Full Backstage layout (sidebar + table)</li><li>Expandable independently</li><li>Clean URL for sharing</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>New HTML/JS/Nginx route</li><li>Must re-share auth token</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Replace / Extend the Sidebar</h3>
+      <p>Current sidebar shows "Stacks". Expand it into a full service catalog — clicking a service shows its detail panel in the main area (logs filtered to that service + metrics + owner).</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">Log Dashboard</div>
+        <div class="mockup-body" style="display:flex; gap:0; padding:0; height:100px; overflow:hidden;">
+          <div style="width:110px; background:var(--bg-elevated); padding:8px; font-size:9px; border-right:1px solid var(--border);">
+            <div style="font-size:9px; color:var(--text-muted); text-transform:uppercase; margin-bottom:4px;">Services</div>
+            <div style="padding:3px 4px; background:rgba(108,143,255,0.15); border-radius:3px; color:var(--accent); margin-bottom:2px;">● Admission</div>
+            <div style="padding:3px 4px; color:var(--text-muted); margin-bottom:2px;">● Backend API</div>
+            <div style="padding:3px 4px; color:var(--text-muted); margin-bottom:2px; color:#ef4444;">● Registration</div>
+            <div style="padding:3px 4px; color:var(--text-muted);">● OTel Gateway</div>
+          </div>
+          <div style="flex:1; padding:8px;">
+            <div style="font-weight:600; margin-bottom:3px;">Admission <span style="font-weight:400; font-size:10px; color:#22c55e;">● Running</span></div>
+            <div style="font-size:10px; color:var(--text-muted); margin-bottom:6px;">Owner: ธนพล · Stack: admission · Type: API</div>
+            <div style="display:flex; gap:4px; margin-bottom:4px;">
+              <div style="font-size:9px; background:var(--bg-elevated); padding:2px 5px; border-radius:3px;">CPU 12%</div>
+              <div style="font-size:9px; background:var(--bg-elevated); padding:2px 5px; border-radius:3px;">MEM 78%</div>
+              <div style="font-size:9px; background:var(--bg-elevated); padding:2px 5px; border-radius:3px;">ERR 0</div>
+            </div>
+            <div style="font-size:9px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:4px;">Logs filtered to: admission-web, admission-api</div>
+          </div>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>No new page — evolves current sidebar</li><li>Logs stay linked to service context</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Sidebar gets complex</li><li>No catalog "browse" table view</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

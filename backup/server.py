@@ -1,25 +1,29 @@
 import http.server
 import subprocess
-import threading
-import os
 
 class BackupHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/trigger':
-            def run_backup():
-                print("Manual backup triggered via API")
-                subprocess.run(["/bin/bash", "/usr/local/bin/backup.sh"])
-            
-            # Run in a separate thread so the HTTP request returns immediately
-            threading.Thread(target=run_backup).start()
-            
-            self.send_response(200)
+            result = subprocess.run(
+                ["/bin/bash", "/usr/local/bin/backup.sh"],
+                capture_output=True,
+                timeout=600,  # 10 min max
+            )
+            success = result.returncode == 0
+            code = 200 if success else 500
+            body = b'{"status":"success"}' if success else b'{"status":"failed"}'
+            self.send_response(code)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(b'{"status": "success", "message": "Backup started in background"}')
+            self.wfile.write(body)
+            if not success:
+                print(f"Backup failed: {result.stderr.decode(errors='replace')}")
         else:
             self.send_response(404)
             self.end_headers()
+
+    def log_message(self, format, *args):
+        print(f"{self.address_string()} - {format % args}")
 
 def run(server_class=http.server.HTTPServer, handler_class=BackupHandler, port=8080):
     server_address = ('', port)

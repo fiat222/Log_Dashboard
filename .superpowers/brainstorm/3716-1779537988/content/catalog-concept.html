@@ -1,0 +1,80 @@
+<h2>What does "Dashboard Catalog" mean?</h2>
+<p class="subtitle">Three interpretations — pick what matches your vision</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Portal Hub</h3>
+      <p>A landing page that links out to all monitoring tools — Log Dashboard, Grafana, ClickHouse UI, Backup status, etc. — as cards. One place to access everything.</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">monitor-eila.psu.ac.th</div>
+        <div class="mockup-body" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding:8px;">
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">📋<br>Log Dashboard</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">📊<br>Grafana</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">🗄️<br>ClickHouse UI</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">💾<br>Backup Status</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">🔍<br>Patterns</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;">➕<br>Add Tool</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Saved Views Library</h3>
+      <p>Inside the current dashboard, a "Catalog" tab where users save and browse pre-built dashboard views (saved queries, filters, time ranges). Like bookmarks for dashboards.</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">Log Dashboard › Catalog</div>
+        <div class="mockup-body" style="display:flex;gap:8px;flex-wrap:wrap;padding:8px;">
+          <div style="border:1px solid var(--accent);border-radius:6px;padding:8px;width:120px;">
+            <div style="font-weight:600;font-size:11px;">🔴 Error Spike</div>
+            <div style="color:var(--text-muted);font-size:10px;">Last 1h · backend</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:6px;padding:8px;width:120px;">
+            <div style="font-weight:600;font-size:11px;">🌐 Nginx 5xx</div>
+            <div style="color:var(--text-muted);font-size:10px;">Today · all hosts</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:6px;padding:8px;width:120px;">
+            <div style="font-weight:600;font-size:11px;">📈 Daily Analytics</div>
+            <div style="color:var(--text-muted);font-size:10px;">7d window</div>
+          </div>
+          <div style="border:2px dashed var(--border);border-radius:6px;padding:8px;width:120px;text-align:center;color:var(--text-muted);">
+            + New View
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Multi-Dashboard Builder</h3>
+      <p>Users create and name custom dashboards (like Grafana), each with their own panels, filters, and layout. Catalog = browsing your dashboards + shared team dashboards.</p>
+      <div class="mockup" style="margin-top:12px; font-size:11px;">
+        <div class="mockup-header">Dashboard Catalog</div>
+        <div class="mockup-body" style="padding:8px;">
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">MY DASHBOARDS</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;width:130px;">
+              <div style="font-weight:600;">Production Monitor</div>
+              <div style="color:var(--text-muted);font-size:10px;">4 panels · edited 2h ago</div>
+            </div>
+            <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;width:130px;">
+              <div style="font-weight:600;">Auth Errors</div>
+              <div style="color:var(--text-muted);font-size:10px;">2 panels · edited 1d ago</div>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin:8px 0 6px;">SHARED</div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;padding:8px;width:130px;">
+            <div style="font-weight:600;">Team SLA</div>
+            <div style="color:var(--text-muted);font-size:10px;">by admin · 6 panels</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

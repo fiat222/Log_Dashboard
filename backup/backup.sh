@@ -20,7 +20,7 @@ fi
 echo "-> Backing up ClickHouse logs..."
 CH_BACKUP_NAME="ch_observability_$DATE"
 # หมายเหตุ: ClickHouse จะสร้างไฟล์ในโฟลเดอร์ที่ถูก Mount ไว้ (เช่น /var/lib/clickhouse/backups/)
-CH_QUERY="BACKUP DATABASE $CLICKHOUSE_DB TO File('backups/$CH_BACKUP_NAME/');"
+CH_QUERY="BACKUP DATABASE $CLICKHOUSE_DB TO File('$CH_BACKUP_NAME/');"
 
 CH_RESP=$(curl -s -X POST -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
   "http://clickhouse:8123/" -d "$CH_QUERY")
@@ -36,7 +36,7 @@ else
     while [ $ELAPSED -lt $MAX_WAIT ]; do
         STATUS=$(curl -s -u "$CLICKHOUSE_USER:$CLICKHOUSE_PASSWORD" \
           "http://clickhouse:8123/" \
-          --data "SELECT status FROM system.backups WHERE name = 'File(\'backups/$CH_BACKUP_NAME/\')' ORDER BY start_time DESC LIMIT 1 FORMAT TabSeparated")
+          --data "SELECT status FROM system.backups WHERE name = 'File(\'$CH_BACKUP_NAME/\')' ORDER BY start_time DESC LIMIT 1 FORMAT TabSeparated")
 
         # ถ้าสถานะว่างเปล่า ให้ลองดึงตัวล่าสุดมาดู
         if [ -z "$STATUS" ]; then
@@ -72,16 +72,17 @@ else
     ACTUAL_DIR=$(find "$BACKUP_DIR" -maxdepth 1 -name "$CH_BACKUP_NAME*" -type d | head -n 1)
 
     if [ -n "$ACTUAL_DIR" ] && [ -d "$ACTUAL_DIR" ]; then
-        # บีบอัดโดยเข้าไปที่โฟลเดอร์ backup ก่อนเพื่อให้ข้างในไฟล์ .tar.gz ไม่ติด Path เต็มไป
         tar -czf "$CH_TGZ" -C "$BACKUP_DIR" "$(basename "$ACTUAL_DIR")"
-
-        # ลบโฟลเดอร์ดิบออกหลังจากบีบอัดเสร็จ
+        if [ $? -ne 0 ]; then
+            echo "  [FAIL] tar compression failed — raw dir preserved at $ACTUAL_DIR"
+            exit 1
+        fi
         rm -rf "$ACTUAL_DIR"
         echo "  [OK] Compressed ClickHouse backup to: $CH_TGZ"
     else
         echo "  [FAIL] Cannot find ClickHouse raw backup directory at $BACKUP_DIR/$CH_BACKUP_NAME"
-        echo "  Current content of $BACKUP_DIR:"
         ls -l "$BACKUP_DIR"
+        exit 1
     fi
 fi
 

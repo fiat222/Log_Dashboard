@@ -82,7 +82,7 @@ services:
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./clickhouse/config.d/timezone.xml:/etc/clickhouse-server/config.d/timezone.xml:ro
       - ./clickhouse/config.d/async_insert.xml:/etc/clickhouse-server/config.d/async_insert.xml:ro
-      - /mnt/Logstore_backup:/var/lib/clickhouse/user_files/backups
+      - /mnt/Logstore_backup:/var/lib/clickhouse/backups
     env_file:
       - .env
     healthcheck:
@@ -232,6 +232,7 @@ services:
     build: ./backup
     container_name: backup
     restart: unless-stopped
+    user: root
     networks: [ pipeline_network ]
     env_file:
       - .env

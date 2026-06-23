@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(npx create-docusaurus@latest docs-site classic --skip-install)",
-      "Bash(git -C \"D:/PSU/Internship/Logs Dashboard\" diff Chores/vector/vector.toml)"
+      "Bash(git -C \"D:/PSU/Internship/Logs Dashboard\" diff Chores/vector/vector.toml)",
+      "PowerShell(Get-ChildItem -Recurse -Force \"C:\\\\Users\\\\ASUS\\\\.claude\" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match \"security\" } | Select-Object FullName | Format-List)",
+      "PowerShell(Get-ChildItem -Recurse -Force \"D:\\\\PSU\\\\Internship\\\\Logs Dashboard\" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match \"security\" } | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Recurse -Force \"C:\\\\Users\\\\ASUS\\\\.claude\" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match \"security-code\" -or $_.FullName -match \"security-code\" } | Select-Object FullName)",
+      "Bash(rtk ls *)",
+      "Bash(rtk git *)",
+      "Skill(superpowers:writing-plans)",
+      "Bash(not exist *)"
     ]
   }
 }

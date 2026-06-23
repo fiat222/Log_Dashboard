@@ -7,8 +7,8 @@ ENV TZ=Asia/Bangkok
 
 # Non-root runtime user
 RUN addgroup -g 10001 backup && adduser -u 10001 -G backup -s /sbin/nologin -D backup \
-    && mkdir -p /backups /home/backup \
-    && chown -R 10001:10001 /backups /home/backup
+    && mkdir -p /home/backup \
+    && chown -R 10001:10001 /home/backup
 
 COPY --chown=10001:10001 backup.sh   /usr/local/bin/backup.sh
 COPY --chown=10001:10001 server.py   /usr/local/bin/server.py

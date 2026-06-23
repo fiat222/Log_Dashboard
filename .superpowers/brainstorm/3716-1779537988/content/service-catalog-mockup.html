@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Service Catalog Mockup</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #1a1d27;
+    --bg-elevated: #22263a;
+    --border: #2e3350;
+    --text: #e2e8f0;
+    --text-muted: #7c85a8;
+    --accent: #6c8fff;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --purple: #a855f7;
+    --teal: #14b8a6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Inter, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; }
+
+  .shell { display: flex; height: 100vh; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px; background: var(--bg-card); border-right: 1px solid var(--border);
+    padding: 0; display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-brand {
+    padding: 16px; border-bottom: 1px solid var(--border);
+    font-weight: 700; font-size: 15px; color: var(--accent);
+    letter-spacing: -0.3px;
+  }
+  .sidebar-brand span { color: var(--text-muted); font-weight: 400; font-size: 11px; display: block; margin-top: 2px; }
+  .sidebar-section { padding: 12px 16px 4px; font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .sidebar-item {
+    padding: 8px 16px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    color: var(--text-muted); font-size: 12px; border-left: 2px solid transparent;
+  }
+  .sidebar-item.active { color: var(--text); background: var(--bg-elevated); border-left-color: var(--accent); }
+  .sidebar-item:hover:not(.active) { background: rgba(255,255,255,0.03); }
+
+  /* Main */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Topbar */
+  .topbar {
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--bg-card);
+  }
+  .topbar-title { font-size: 17px; font-weight: 700; }
+  .topbar-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .topbar-actions { display: flex; gap: 8px; align-items: center; }
+  .btn { padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; border: none; font-weight: 500; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+
+  /* Filter bar */
+  .filterbar {
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .search-box {
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-elevated); color: var(--text); font-size: 12px; width: 220px;
+  }
+  .filter-chip {
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 20px;
+    font-size: 11px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; gap: 4px;
+  }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(108,143,255,0.1); }
+  .results-count { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+
+  /* Table */
+  .table-wrap { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; padding: 8px 12px; font-size: 10px; font-weight: 600;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+    background: var(--bg);
+  }
+  tbody tr {
+    border-bottom: 1px solid var(--border); cursor: pointer;
+    transition: background 0.1s;
+  }
+  tbody tr:hover { background: var(--bg-card); }
+  td { padding: 12px 12px; vertical-align: middle; }
+
+  /* Service name cell */
+  .svc-name { font-weight: 600; font-size: 13px; color: var(--text); }
+  .svc-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; max-width: 260px; }
+
+  /* Badges */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge-blue { background: rgba(108,143,255,0.15); color: var(--accent); }
+  .badge-purple { background: rgba(168,85,247,0.15); color: var(--purple); }
+  .badge-teal { background: rgba(20,184,166,0.15); color: var(--teal); }
+  .badge-gray { background: rgba(124,133,168,0.15); color: var(--text-muted); }
+
+  /* Owner pill */
+  .owner-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 20px; border: 1px solid var(--border);
+    font-size: 11px; color: var(--text-muted);
+  }
+  .avatar { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); font-size: 8px; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; }
+
+  /* Metric chips */
+  .metric-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .metric-chip {
+    padding: 2px 7px; border-radius: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace;
+    background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-muted);
+    display: flex; align-items: center; gap: 3px;
+  }
+  .metric-chip .val { color: var(--text); font-weight: 600; }
+  .metric-chip .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
+  .metric-chip .dot.warn { background: var(--yellow); }
+  .metric-chip .dot.err { background: var(--red); }
+
+  /* Stack tag */
+  .stack-tag { font-size: 11px; color: var(--accent); font-weight: 500; }
+
+  /* Container name */
+  .container-mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); }
+
+  /* Detail panel note */
+  .detail-hint { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      Log Dashboard
+      <span>PSU Monitoring Portal</span>
+    </div>
+    <div class="sidebar-section">Catalog</div>
+    <div class="sidebar-item active">🗂️ Services</div>
+    <div class="sidebar-item">🔗 APIs</div>
+    <div class="sidebar-item">📦 Stacks</div>
+    <div class="sidebar-section">Monitoring</div>
+    <div class="sidebar-item">📋 Logs</div>
+    <div class="sidebar-item">📊 Grafana</div>
+    <div class="sidebar-item">🌐 Nginx</div>
+    <div class="sidebar-section">Admin</div>
+    <div class="sidebar-item">⚙️ Settings</div>
+    <div class="sidebar-item">👥 Users</div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main">
+    <!-- Topbar -->
+    <div class="topbar">
+      <div>
+        <div class="topbar-title">Service Catalog</div>
+        <div class="topbar-sub">All registered services, containers, and their owners</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost">Import</button>
+        <button class="btn btn-primary">+ Register Service</button>
+      </div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="filterbar">
+      <input class="search-box" placeholder="🔍  Search services…" value=""/>
+      <div class="filter-chip active">All Types</div>
+      <div class="filter-chip">🖥️ API</div>
+      <div class="filter-chip">🌐 Frontend</div>
+      <div class="filter-chip">🗄️ Database</div>
+      <div class="filter-chip">⚙️ Worker</div>
+      <div class="filter-chip">🔗 Gateway</div>
+      <div class="results-count">12 services</div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Service</th>
+            <th>Container</th>
+            <th>Stack</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Owner</th>
+            <th>Metrics</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div class="svc-name">Admission</div>
+              <div class="svc-desc">Student admission portal — form handling & enrollment API</div>
+            </td>
+            <td><div class="container-mono">admission-web</div><div class="detail-hint">admission-api</div></td>
+            <td><div class="stack-tag">admission</div></td>
+            <td><span class="badge badge-blue">API</span></td>
+            <td><span class="badge badge-green">● Running</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">ท</div>
+                ธนพล อั๋ง
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">12%</span></div>
+                <div class="metric-chip"><div class="dot warn"></div> MEM <span class="val">78%</span></div>
+                <div class="metric-chip">ERR <span class="val">0</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">Backend API</div>
+              <div class="svc-desc">FastAPI — auth, role-based ClickHouse proxy, SSE</div>
+            </td>
+            <td><div class="container-mono">backend</div></td>
+            <td><div class="stack-tag">log-dashboard</div></td>
+            <td><span class="badge badge-blue">API</span></td>
+            <td><span class="badge badge-green">● Running</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">ท</div>
+                ธนพล อั๋ง
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">4%</span></div>
+                <div class="metric-chip"><div class="dot"></div> MEM <span class="val">31%</span></div>
+                <div class="metric-chip">ERR <span class="val">2</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">OTel Gateway</div>
+              <div class="svc-desc">Receives OTLP, transforms, batches → ClickHouse</div>
+            </td>
+            <td><div class="container-mono">otel-gateway</div></td>
+            <td><div class="stack-tag">observability</div></td>
+            <td><span class="badge badge-teal">Gateway</span></td>
+            <td><span class="badge badge-green">● Running</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">P</div>
+                Platform
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">7%</span></div>
+                <div class="metric-chip"><div class="dot"></div> MEM <span class="val">22%</span></div>
+                <div class="metric-chip">LOG/s <span class="val">340</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">ClickHouse</div>
+              <div class="svc-desc">Columnar log storage + analytics (MergeTree)</div>
+            </td>
+            <td><div class="container-mono">clickhouse</div></td>
+            <td><div class="stack-tag">observability</div></td>
+            <td><span class="badge badge-purple">Database</span></td>
+            <td><span class="badge badge-green">● Running</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">P</div>
+                Platform
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">9%</span></div>
+                <div class="metric-chip"><div class="dot warn"></div> MEM <span class="val">65%</span></div>
+                <div class="metric-chip">DISK <span class="val">28GB</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">Vector Agent</div>
+              <div class="svc-desc">Reads Docker socket + Nginx logs → OTLP to gateway</div>
+            </td>
+            <td><div class="container-mono">vector</div></td>
+            <td><div class="stack-tag">observability</div></td>
+            <td><span class="badge badge-teal">Gateway</span></td>
+            <td><span class="badge badge-green">● Running</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">P</div>
+                Platform
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">2%</span></div>
+                <div class="metric-chip"><div class="dot"></div> MEM <span class="val">18%</span></div>
+                <div class="metric-chip">EVT/s <span class="val">120</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">Backup Service</div>
+              <div class="svc-desc">APScheduler-triggered ClickHouse backups</div>
+            </td>
+            <td><div class="container-mono">backup</div></td>
+            <td><div class="stack-tag">log-dashboard</div></td>
+            <td><span class="badge badge-gray">Worker</span></td>
+            <td><span class="badge badge-yellow">● Idle</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">P</div>
+                Platform
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot"></div> CPU <span class="val">0%</span></div>
+                <div class="metric-chip"><div class="dot"></div> MEM <span class="val">12%</span></div>
+                <div class="metric-chip">LAST <span class="val">2h ago</span></div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <div class="svc-name">Registration System</div>
+              <div class="svc-desc">Student course registration — legacy Spring Boot service</div>
+            </td>
+            <td><div class="container-mono">reg-api</div><div class="detail-hint">reg-frontend</div></td>
+            <td><div class="stack-tag">registration</div></td>
+            <td><span class="badge badge-blue">API</span></td>
+            <td><span class="badge badge-red">● Error</span></td>
+            <td>
+              <div class="owner-pill">
+                <div class="avatar">ส</div>
+                สมชาย ทีม
+              </div>
+            </td>
+            <td>
+              <div class="metric-row">
+                <div class="metric-chip"><div class="dot err"></div> CPU <span class="val">89%</span></div>
+                <div class="metric-chip"><div class="dot err"></div> MEM <span class="val">92%</span></div>
+                <div class="metric-chip">ERR <span class="val" style="color:var(--red)">147</span></div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>

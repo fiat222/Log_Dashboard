@@ -87,3 +87,13 @@ restore_backup.md
 promote.ps1
 cookies.txt
 daemon.json
+.codex/
+.agents/
+.graphify_*
+graphify-out/
+reports/
+node_modules/
+test-results/
+playwright-report/
+
+tmp_*.txt

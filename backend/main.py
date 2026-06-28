@@ -38,6 +38,17 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+try:
+    from query_guards import apply_container_scope, ensure_select_query
+    from routers.observability import create_observability_router
+    from service_queries import build_services_summary_query
+    from telemetry import should_enable_otel
+except ImportError:  # pragma: no cover - used when imported as backend.main in tests
+    from backend.query_guards import apply_container_scope, ensure_select_query
+    from backend.routers.observability import create_observability_router
+    from backend.service_queries import build_services_summary_query
+    from backend.telemetry import should_enable_otel
+
 # ── Config ────────────────────────────────────────────────────────────────────
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() != "false"
 SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "30"))
@@ -382,7 +393,7 @@ async def check_log_spam_anomalies():
             "count() as cnt, "
             "round(count() / 60.0, 2) as req_per_sec, "
             "sum(match(lower(Body), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
-            "substr(replaceRegexpAll(lower(Body), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
+            "substr(replaceRegexpAll(lower(Body), '[0-9:\\.\\+\\-]+', ''), 1, 60) as grp "
             "FROM observability.otel_logs_local "
             "WHERE Timestamp > now() - INTERVAL 1 MINUTE "
             "AND ServiceName != 'nginx' "
@@ -922,16 +933,17 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-_otel_provider = TracerProvider()
-_otel_provider.add_span_processor(
-    BatchSpanProcessor(
-        OTLPSpanExporter(
-            endpoint=os.getenv("OTEL_EXPORTER_ENDPOINT", "http://otel-gateway:4317"),
-            insecure=True,
+if should_enable_otel(os.environ):
+    _otel_provider = TracerProvider()
+    _otel_provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(
+                endpoint=os.getenv("OTEL_EXPORTER_ENDPOINT", "http://otel-gateway:4317"),
+                insecure=True,
+            )
         )
     )
-)
-trace.set_tracer_provider(_otel_provider)
+    trace.set_tracer_provider(_otel_provider)
 
 app = FastAPI(title="Log Dashboard API", lifespan=lifespan)
 FastAPIInstrumentor.instrument_app(app)
@@ -1175,6 +1187,58 @@ async def sso_callback(request: Request, code: str = Query(...), response: Respo
 
 
 # ── Routes: ClickHouse Proxy ──────────────────────────────────────────────────
+async def _clickhouse_json_query(sql: str, *, timeout_sec: int = 20) -> dict:
+    """Run a read-only ClickHouse query and return parsed JSON."""
+
+    url = f"http://{CH_HOST}:{CH_PORT}/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            params={"query": sql, "database": CH_DB, "default_format": "JSON"},
+            headers={"X-ClickHouse-User": CH_USER, "X-ClickHouse-Key": CH_PASS},
+            timeout=aiohttp.ClientTimeout(total=timeout_sec),
+        ) as resp:
+            body = await resp.text()
+            if resp.status != 200:
+                raise HTTPException(resp.status, f"ClickHouse error: {body[:300]}")
+            return json.loads(body)
+
+
+async def _fetch_service_summary(
+    *,
+    hours: int,
+    host_id: Optional[str],
+    user,
+    db: AsyncSession,
+):
+    owned_containers = None
+    if user.get("role") == "developer":
+        result = await db.execute(
+            text("SELECT container_id FROM container_ownership WHERE user_id = :uid"),
+            {"uid": user.get("user_id")},
+        )
+        owned_containers = [row[0] for row in result.fetchall()]
+        if not owned_containers:
+            return {"data": [], "rows": 0}
+
+    sql = build_services_summary_query(
+        hours=hours,
+        host_id=host_id,
+        container_names=owned_containers,
+    )
+    return await _clickhouse_json_query(sql)
+
+
+app.include_router(
+    create_observability_router(
+        get_current_user=get_current_user,
+        get_db=get_db,
+        rate_limit_api=rate_limit_api,
+        fetch_service_summary=_fetch_service_summary,
+    )
+)
+
+
 @app.get("/api/query", dependencies=[Depends(rate_limit_api)])
 async def ch_query(q: str = Query(...), user=Depends(get_current_user),
                    db: AsyncSession = Depends(get_db)):
@@ -1186,9 +1250,10 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
         raise HTTPException(503, "Database temporarily unavailable (Circuit Breaker active)")
 
     # 1. Basic sanity: only allow SELECT
-    stripped = q.strip().upper()
-    if not stripped.startswith("SELECT"):
-        raise HTTPException(400, "Only SELECT queries allowed on this endpoint")
+    try:
+        q = ensure_select_query(q)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     # 2. Developer role: inject container filter
     modified_q = q
@@ -1201,25 +1266,8 @@ async def ch_query(q: str = Query(...), user=Depends(get_current_user),
         owned = [row[0] for row in result.fetchall()]
         if not owned:
             return {"data": [], "rows": 0}
-        
-        cname_list = ",".join(f"'{c}'" for c in owned)
-        filter_clause = f" ContainerName IN ({cname_list})"
 
-        upper_q = q.upper()
-        keywords = [" GROUP BY ", " ORDER BY ", " LIMIT ", " FORMAT "]
-        insert_pos = len(q)
-        for keyword in keywords:
-            pos = upper_q.find(keyword)
-            if pos != -1 and pos < insert_pos:
-                insert_pos = pos
-        
-        prefix = q[:insert_pos].strip()
-        suffix = q[insert_pos:]
-        
-        if " WHERE " in prefix.upper():
-            modified_q = prefix + " AND " + filter_clause + suffix
-        else:
-            modified_q = prefix + " WHERE " + filter_clause + suffix
+        modified_q = apply_container_scope(q, owned)
         
         log.info("Modified Query for Developer: %s", modified_q)
 
@@ -1572,7 +1620,7 @@ async def debug_spam_scan(user=Depends(require_role("super_admin", "admin")), db
         "count() as cnt, "
         "round(count() / 60.0, 2) as req_per_sec, "
         "sum(match(lower(Body), '(ddos|denial.of.service|flood|rate.limit|too.many.requests|429|syn)')) as ddos_hits, "
-        "substr(replaceRegexpAll(lower(Body), '[0-9\\:\\\.\\+\\-]+', ''), 1, 60) as grp "
+        "substr(replaceRegexpAll(lower(Body), '[0-9:\\.\\+\\-]+', ''), 1, 60) as grp "
         "FROM observability.otel_logs_local "
         "WHERE Timestamp > now() - INTERVAL 1 MINUTE "
         "AND ServiceName != 'nginx' "

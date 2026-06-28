@@ -1,0 +1,79 @@
+# Local development override.
+# Use with:
+#   $env:TAG="local"; docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# This file avoids the internship/private registry and runs Postgres locally.
+
+volumes:
+  postgres_data:
+  clickhouse_backups:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: log-postgres
+    restart: unless-stopped
+    networks: [ pipeline_network ]
+    environment:
+      POSTGRES_DB: logdashboard
+      POSTGRES_USER: logdashboard
+      POSTGRES_PASSWORD: logdashboard_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U logdashboard -d logdashboard" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+
+  redis:
+    image: redis:7.2
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./clickhouse/config.d/timezone.xml:/etc/clickhouse-server/config.d/timezone.xml:ro
+      - ./clickhouse/config.d/async_insert.xml:/etc/clickhouse-server/config.d/async_insert.xml:ro
+      - clickhouse_backups:/var/lib/clickhouse/backups
+
+  vector-containers:
+    image: timberio/vector:0.54.0-alpine
+
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+
+  backend:
+    image: logs-dashboard-backend:${TAG:-local}
+    environment:
+      DOCKER_HOST: "tcp://docker-proxy:2375"
+      DATABASE_URL: postgresql+asyncpg://logdashboard:logdashboard_dev@postgres:5432/logdashboard
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+
+  log-dashboard:
+    image: logs-dashboard-ui:${TAG:-local}
+    healthcheck:
+      test: [ "CMD-SHELL", "exit 0" ]
+
+  backup:
+    profiles: [ "extras" ]
+    image: logs-dashboard-backup:${TAG:-local}
+    volumes:
+      - clickhouse_backups:/backups
+
+  ch-ui:
+    image: nginxinc/nginx-unprivileged:1.25

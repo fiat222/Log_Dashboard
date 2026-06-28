@@ -12,6 +12,21 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE = "/logstore/api";
+if (window.LogDashApi) window.LogDashApi.configure({ apiBase: API_BASE });
+
+// Legacy/optional surfaces kept in code for future platform expansion.
+// They are hidden by default while the product focuses on centralized
+// observability: Overview, Logs, Analytics, and Admin.
+const UI_FEATURES = Object.freeze({
+  analytics: true,
+  gateway: false,       // formerly Nginx/Gateway tab
+  patterns: false,      // experimental log-pattern clustering
+  externalTools: false, // old Grafana/ClickHouse UI shortcuts
+});
+
+function isFeatureEnabled(name) {
+  return UI_FEATURES[name] === true;
+}
 
 // ── Cross-tab session sync ────────────────────────────────────────────────────
 const _authChannel = typeof BroadcastChannel !== "undefined"
@@ -32,6 +47,8 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 const PAGE_SIZE = Math.max(20, Math.floor((window.innerHeight - 220) / 32));
+const MAX_LOG_ROWS_IN_DOM = PAGE_SIZE;
+const LOG_MESSAGE_PREVIEW_LIMIT = 1000;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -39,6 +56,7 @@ let state = {
   selectedStack: null,
   stackNames: [],
   selectedProject: null,
+  selectedService: null,   // { service_key, host_id, compose_project, compose_service }
   search: "",
   level: "",
   sortDir: "DESC",
@@ -46,7 +64,8 @@ let state = {
   toDate: null,
   page: 0,
   totalRows: 0,
-  view: "logs",           // "logs" | "analytics" | "admin"
+  view: "overview",       // "overview" | "logs" | "analytics" | "admin"
+  overview: null,
   settings: {},
   notifications: [],
   unreadCount: 0,
@@ -213,10 +232,10 @@ function applyRoleUI() {
 
   // Nginx tab — admin + super_admin only
   const nginxTab = el("tab-nginx");
-  if (nginxTab) nginxTab.classList.toggle("hidden", !isAdmin);
+  if (nginxTab) nginxTab.classList.toggle("hidden", !(isAdmin && isFeatureEnabled("gateway")));
 
   // Patterns tab — all authenticated users
-  el("tab-patterns")?.classList.remove("hidden");
+  el("tab-patterns")?.classList.toggle("hidden", !isFeatureEnabled("patterns"));
 
   // Settings panel — admin + super_admin
   const settingsPanel = el("sidebar-settings");
@@ -224,11 +243,11 @@ function applyRoleUI() {
 
   // Monitor dashboard button — admin + super_admin only
   const monitorBtn = el("btn-monitor-linked");
-  if (monitorBtn) monitorBtn.classList.toggle("hidden", !isAdmin);
+  if (monitorBtn) monitorBtn.classList.toggle("hidden", !(isAdmin && isFeatureEnabled("externalTools")));
 
   // ClickHouse UI button — admin + super_admin only
   const chBtn = el("btn-clickhouse-linked");
-  if (chBtn) chBtn.classList.toggle("hidden", !isAdmin);
+  if (chBtn) chBtn.classList.toggle("hidden", !(isAdmin && isFeatureEnabled("externalTools")));
 }
 
 el("btn-logout").addEventListener("click", async () => {
@@ -271,7 +290,14 @@ async function apiExec(sql) {
 // ── Build WHERE clause ────────────────────────────────────────────────────────
 function buildWhere(includeStack = true) {
   const parts = [];
-  if (includeStack && state.selectedStack && state.stackNames.length > 0) {
+  if (includeStack && state.selectedService) {
+    const svc = state.selectedService;
+    if (svc.host_id) parts.push(`HostName = '${esc(svc.host_id)}'`);
+    if (svc.compose_project) parts.push(`ComposeProject = '${esc(svc.compose_project)}'`);
+    if (svc.compose_service) {
+      parts.push(`ResourceAttributes['container.label.com.docker.compose.service'] = '${esc(svc.compose_service)}'`);
+    }
+  } else if (includeStack && state.selectedStack && state.stackNames.length > 0) {
     const cnames = state.stackNames.map(c => `'${esc(c)}'`).join(",");
     parts.push(`ContainerName IN (${cnames})`);
     if (state.selectedProject) {
@@ -377,6 +403,20 @@ async function loadContainerList() {
   _containerListAbortController = new AbortController();
   const { signal: clSig } = _containerListAbortController;
   try {
+    const servicesRes = await fetch(`${API_BASE}/services?hours=24`, {
+      credentials: "include",
+      signal: clSig,
+    });
+    if (servicesRes.status === 401) { window.location.href = "/logstore/login"; return; }
+    if (servicesRes.ok) {
+      const payload = await servicesRes.json();
+      if (Array.isArray(payload.data) && payload.data.length > 0) {
+        lastSidebarRows = payload.data.map(row => ({ ...row, __kind: "service" }));
+        renderSidebar();
+        return;
+      }
+    }
+
     const rows = await apiQuery(`
       SELECT ContainerName, max(Timestamp) AS last_seen,
              count() AS log_count, countIf(lower(SeverityText)='error') AS error_count,
@@ -391,7 +431,54 @@ async function loadContainerList() {
   } catch (e) { if (e.name !== "AbortError") console.error("Container list error:", e); }
 }
 
+async function loadOverview() {
+  return getOverviewModule().loadOverview();
+}
+
+function renderOverview() {
+  return getOverviewModule().renderOverview();
+}
+
+function renderOverviewServiceList(id, services, mode) {
+  return getOverviewModule().renderOverviewServiceList(id, services, mode);
+}
+
+function getLogsModule() {
+  if (!window.LogDashLogs) {
+    throw new Error("LogDashLogs module is not loaded");
+  }
+  window.LogDashLogs.init({
+    ansiToHtml,
+    escHtml,
+    formatTs,
+    messagePreviewLimit: LOG_MESSAGE_PREVIEW_LIMIT,
+    levelScanLimit: 200,
+    containerAliasesProvider: () => containerAliases,
+  });
+  return window.LogDashLogs;
+}
+
+function getOverviewModule() {
+  if (!window.LogDashOverview) {
+    throw new Error("LogDashOverview module is not loaded");
+  }
+  window.LogDashOverview.init({
+    state,
+    el,
+    fmt,
+    escHtml,
+    activateLogsView,
+    selectService,
+  });
+  return window.LogDashOverview;
+}
+
 function renderSidebar() {
+  if (lastSidebarRows[0]?.__kind === "service") {
+    renderServiceSidebar();
+    return;
+  }
+
   const folderList = el("folder-list");
   folderList.innerHTML = "";
   folderDataMap = {};
@@ -402,7 +489,7 @@ function renderSidebar() {
   allItem.className = "container-item" + (!state.selectedStack ? " active" : "");
   allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Containers</span>`;
   allItem.addEventListener("click", () => {
-    state.selectedStack = null; state.stackNames = []; state.selectedProject = null; state.page = 0;
+    state.selectedStack = null; state.stackNames = []; state.selectedProject = null; state.selectedService = null; state.page = 0;
     stopLogsSSE();
     if (state.view === "logs") startLogsSSE();
     loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
@@ -563,8 +650,102 @@ function renderSidebar() {
   });
 }
 
+function renderServiceSidebar() {
+  const folderList = el("folder-list");
+  folderList.innerHTML = "";
+  folderDataMap = {};
+
+  const allItem = document.createElement("div");
+  allItem.className = "container-item" + (!state.selectedStack && !state.selectedService ? " active" : "");
+  allItem.innerHTML = `<span class="c-dot" style="background:var(--accent);color:var(--accent)"></span><span class="c-name">All Services</span>`;
+  allItem.addEventListener("click", () => {
+    state.selectedStack = null; state.stackNames = []; state.selectedProject = null; state.selectedService = null; state.page = 0;
+    stopLogsSSE();
+    if (state.view === "logs") startLogsSSE();
+    loadLogs(); if (state.view === "analytics") loadAnalytics(); renderSidebar();
+  });
+  folderList.appendChild(allItem);
+
+  const dotThresholds = {
+    green: parseInt(state.settings.dot_green_threshold_sec || "60"),
+    amber: parseInt(state.settings.dot_amber_threshold_sec || "300"),
+  };
+  const now = Date.now();
+
+  lastSidebarRows.forEach(row => {
+    const host = row.host_id || "unknown-host";
+    const project = row.compose_project || "standalone";
+    const groupName = `${host} › ${project}`;
+    const lastSeen = row.last_seen;
+    const ageSec = lastSeen ? (now - new Date(lastSeen).getTime()) / 1000 : Number.POSITIVE_INFINITY;
+    const dot = ageSec < dotThresholds.green ? "green"
+      : ageSec < dotThresholds.amber ? "amber" : "red";
+    if (!folderDataMap[groupName]) folderDataMap[groupName] = { items: [], rawProject: project };
+    folderDataMap[groupName].items.push({
+      service_key: row.service_key,
+      host_id: host,
+      compose_project: project,
+      compose_service: row.compose_service || row.sample_container_name || "unknown-service",
+      last_seen: lastSeen,
+      dot,
+      error_count: Number(row.error_count || 0),
+      log_count: Number(row.log_count || 0),
+      instance_count: Number(row.instance_count || 0),
+      active_instance_count: Number(row.active_instance_count || 0),
+      sample_container_name: row.sample_container_name,
+    });
+  });
+
+  Object.keys(folderDataMap).sort().forEach(groupName => {
+    const group = document.createElement("div");
+    const { items } = folderDataMap[groupName];
+    const isActive = items.some(item => item.service_key === state.selectedService?.service_key);
+    if (isActive) openStacks.add(groupName);
+    const isOpen = isActive || openStacks.has(groupName);
+    group.className = "folder-group " + (isOpen ? "open" : "") + (isActive ? " active-stack" : "");
+    group.innerHTML = `
+      <div class="folder-header" style="cursor:pointer;display:flex;align-items:center;">
+        <span class="folder-icon">▶</span>
+        <span>${escHtml(groupName)}</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:10px;">${items.length}</span>
+      </div>
+      <div class="folder-children" ${isOpen ? "" : 'data-loaded="false"'}></div>
+    `;
+
+    const childrenContainer = group.querySelector(".folder-children");
+    const renderItems = () => {
+      childrenContainer.innerHTML = "";
+      items
+        .sort((a, b) => (b.error_count - a.error_count) || String(a.compose_service).localeCompare(String(b.compose_service)))
+        .forEach(item => childrenContainer.appendChild(makeServiceItem(item)));
+      childrenContainer.removeAttribute("data-loaded");
+    };
+    if (isOpen) renderItems();
+
+    group.querySelector(".folder-icon").addEventListener("click", e => {
+      e.stopPropagation();
+      const willOpen = !group.classList.contains("open");
+      group.classList.toggle("open");
+      if (willOpen) openStacks.add(groupName);
+      else openStacks.delete(groupName);
+      if (willOpen && childrenContainer.getAttribute("data-loaded") === "false") renderItems();
+    });
+
+    group.querySelector(".folder-header").addEventListener("click", e => {
+      if (e.target.closest(".folder-icon")) return;
+      const willOpen = !group.classList.contains("open");
+      group.classList.toggle("open");
+      if (willOpen) openStacks.add(groupName);
+      else openStacks.delete(groupName);
+      if (willOpen && childrenContainer.getAttribute("data-loaded") === "false") renderItems();
+    });
+
+    folderList.appendChild(group);
+  });
+}
+
 function selectStack(stackName, containerNames, project = null) {
-  state.selectedStack = stackName; state.stackNames = containerNames || []; state.selectedProject = project; state.page = 0;
+  state.selectedStack = stackName; state.stackNames = containerNames || []; state.selectedProject = project; state.selectedService = null; state.page = 0;
   stopLogsSSE();
   renderSidebar();
   if (_selectStackTimer) clearTimeout(_selectStackTimer);
@@ -573,6 +754,42 @@ function selectStack(stackName, containerNames, project = null) {
     loadLogs();
     if (state.view === "analytics") loadAnalytics();
   }, 200);
+}
+
+function selectService(service) {
+  if (state.view === "overview") activateLogsView();
+  state.selectedStack = service.compose_service;
+  state.stackNames = [];
+  state.selectedProject = service.compose_project;
+  state.selectedService = service;
+  state.page = 0;
+  stopLogsSSE();
+  renderSidebar();
+  if (_selectStackTimer) clearTimeout(_selectStackTimer);
+  _selectStackTimer = setTimeout(() => {
+    if (state.view === "logs") startLogsSSE();
+    loadLogs();
+    if (state.view === "analytics") loadAnalytics();
+  }, 200);
+}
+
+function makeServiceItem(service) {
+  const div = document.createElement("div");
+  const isSelected = state.selectedService?.service_key === service.service_key;
+  div.className = "container-item" + (isSelected ? " active" : "");
+  const badgeText = service.error_count > 0 ? fmt(service.error_count) : "";
+  const instanceText = service.active_instance_count > 0
+    ? `${service.active_instance_count}/${service.instance_count || service.active_instance_count}`
+    : `${service.instance_count || 0}`;
+  div.innerHTML = `
+    <span class="c-dot ${service.dot}"></span>
+    <span class="c-name">${escHtml(service.compose_service)}</span>
+    <span class="c-project-tag" title="active/total instances">${escHtml(instanceText)}</span>
+    ${badgeText ? `<span class="c-badge">${badgeText}</span>` : ""}
+  `;
+  div.title = `${service.service_key}\nlogs: ${service.log_count}\nlast seen: ${service.last_seen || "unknown"}`;
+  div.addEventListener("click", () => selectService(service));
+  return div;
 }
 
 function makeContainerItem(name, realName, dotClass, errorCount, project = null, showProject = false) {
@@ -741,6 +958,9 @@ function renderTable(rows) {
     tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No logs found for the current filters.</td></tr>`;
     return;
   }
+  tbody.innerHTML = rows.map(row => getLogsModule().renderLogRowHtml(row)).join("");
+  bindLogRowActions(tbody);
+  /* Legacy inline renderer moved to dashboard/src/logs.js.
   tbody.innerHTML = rows.map(([ts, cname, level, msg, traceId]) => {
     let lvl = (level || "").toLowerCase();
 
@@ -758,7 +978,7 @@ function renderTable(rows) {
     const displayName = containerAliases[cname] || cname;
     const tsAttr = escHtml(String(ts));
     const cnameAttr = escHtml(String(cname));
-    const msgHtml = ansiToHtml(String(msg).slice(0, 1000));
+    const msgHtml = ansiToHtml(String(msg).slice(0, LOG_MESSAGE_PREVIEW_LIMIT));
     return `<tr class="${rowCls}">
       <td class="td-ts">${formatTs(ts)}</td>
       <td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td>
@@ -768,6 +988,24 @@ function renderTable(rows) {
     </tr>`;
   }).join("");
 
+  tbody.querySelectorAll(".btn-ctx").forEach(btn => {
+    btn.addEventListener("click", () => {
+      openContextModal(btn.dataset.cname, btn.dataset.ts);
+    });
+  });
+
+  tbody.querySelectorAll(".btn-tid").forEach(btn => {
+    btn.addEventListener("click", () => openTraceModal(btn.dataset.tid));
+  });
+  */
+}
+
+function trimTableRows(tbody, limit) {
+  if (!tbody || !Number.isFinite(limit) || limit <= 0) return;
+  while (tbody.rows.length > limit) tbody.deleteRow(tbody.rows.length - 1);
+}
+
+function bindLogRowActions(tbody) {
   tbody.querySelectorAll(".btn-ctx").forEach(btn => {
     btn.addEventListener("click", () => {
       openContextModal(btn.dataset.cname, btn.dataset.ts);
@@ -1092,11 +1330,11 @@ function prependLogRows(newRows) {
     const displayName = containerAliases[cname] || cname;
     const tr = document.createElement("tr");
     tr.className = (rowCls + " row-new").trim();
-    const msgHtml = ansiToHtml(String(msg).slice(0, 1000));
+    const msgHtml = ansiToHtml(String(msg).slice(0, LOG_MESSAGE_PREVIEW_LIMIT));
     tr.innerHTML = `<td class="td-ts">${formatTs(ts)}</td><td class="td-cid" title="${escHtml(cname)}">${escHtml(displayName)}</td><td><span class="badge ${badgeCls}">${escHtml(lvl || "—")}</span></td><td class="td-msg">${msgHtml}</td><td class="td-ctx"></td>`;
     tbody.insertBefore(tr, tbody.firstChild);
   });
-  while (tbody.rows.length > PAGE_SIZE) tbody.deleteRow(tbody.rows.length - 1);
+  trimTableRows(tbody, MAX_LOG_ROWS_IN_DOM);
   state.totalRows += newRows.length;
   const totalPages = Math.max(1, Math.ceil(state.totalRows / PAGE_SIZE));
   const statusEl = el("table-status");
@@ -2468,7 +2706,43 @@ document.querySelectorAll(".btn-save-setting").forEach(btn => {
 });
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+function setActiveTab(tabId) {
+  document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
+  el(tabId)?.classList.add("active");
+}
+
+function hideMainViews() {
+  ["overview-section", "logs-view-wrapper", "analytics-section", "admin-section", "nginx-view-wrapper", "patterns-section"].forEach(id => {
+    el(id)?.classList.add("hidden");
+  });
+}
+
+function activateOverviewView() {
+  state.view = "overview";
+  setActiveTab("tab-overview");
+  hideMainViews();
+  el("overview-section")?.classList.remove("hidden");
+  hideAnalyticsDetail();
+  stopLogsSSE();
+  stopNginxSSE();
+  loadOverview();
+}
+
+function activateLogsView() {
+  state.view = "logs";
+  setActiveTab("tab-logs");
+  hideMainViews();
+  el("logs-view-wrapper")?.classList.remove("hidden");
+  hideAnalyticsDetail();
+  stopNginxSSE();
+  startLogsSSE();
+}
+
+el("tab-overview")?.addEventListener("click", activateOverviewView);
+
 el("tab-logs").addEventListener("click", () => {
+  activateLogsView();
+  return;
   state.view = "logs";
   el("tab-logs").classList.add("active");
   el("tab-analytics").classList.remove("active");
@@ -2486,6 +2760,14 @@ el("tab-logs").addEventListener("click", () => {
 });
 
 el("tab-analytics").addEventListener("click", () => {
+  state.view = "analytics";
+  setActiveTab("tab-analytics");
+  hideMainViews();
+  el("analytics-section").classList.remove("hidden");
+  loadAnalytics();
+  stopLogsSSE();
+  stopNginxSSE();
+  return;
   state.view = "analytics";
   el("tab-analytics").classList.add("active");
   el("tab-logs").classList.remove("active");
@@ -2516,6 +2798,14 @@ el("tab-analytics").addEventListener("click", () => {
 
 el("tab-admin").addEventListener("click", () => {
   state.view = "admin";
+  setActiveTab("tab-admin");
+  hideMainViews();
+  el("admin-section").classList.remove("hidden");
+  loadAdminPanel();
+  stopNginxSSE();
+  stopLogsSSE();
+  return;
+  state.view = "admin";
   el("tab-admin").classList.add("active");
   el("tab-logs").classList.remove("active");
   el("tab-analytics").classList.remove("active");
@@ -2531,38 +2821,32 @@ el("tab-admin").addEventListener("click", () => {
   stopLogsSSE();
 });
 
-el("tab-nginx").addEventListener("click", () => {
-  state.view = "nginx";
-  el("tab-nginx").classList.add("active");
-  el("tab-logs").classList.remove("active");
-  el("tab-analytics").classList.remove("active");
-  el("tab-admin").classList.remove("active");
-  el("tab-patterns")?.classList.remove("active");
-  el("nginx-view-wrapper").classList.remove("hidden");
-  el("logs-view-wrapper").classList.add("hidden");
-  el("analytics-section").classList.add("hidden");
-  el("admin-section").classList.add("hidden");
-  el("patterns-section")?.classList.add("hidden");
-  hideAnalyticsDetail();
-  loadNginxAnalytics();
-  startNginxSSE();
-  loadNginxLogs();
-  stopLogsSSE();
-});
-
-el("tab-patterns")?.addEventListener("click", () => {
-  state.view = "patterns";
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-  el("tab-patterns").classList.add("active");
-  ["logs-view-wrapper", "analytics-section", "admin-section", "nginx-view-wrapper"].forEach(id => {
-    el(id)?.classList.add("hidden");
+if (isFeatureEnabled("gateway")) {
+  el("tab-nginx")?.addEventListener("click", () => {
+    state.view = "nginx";
+    setActiveTab("tab-nginx");
+    hideMainViews();
+    el("nginx-view-wrapper")?.classList.remove("hidden");
+    hideAnalyticsDetail();
+    loadNginxAnalytics();
+    startNginxSSE();
+    loadNginxLogs();
+    stopLogsSSE();
   });
-  el("patterns-section").classList.remove("hidden");
-  hideAnalyticsDetail();
-  stopLogsSSE();
-  stopNginxSSE();
-  loadPatterns();
-});
+}
+
+if (isFeatureEnabled("patterns")) {
+  el("tab-patterns")?.addEventListener("click", () => {
+    state.view = "patterns";
+    setActiveTab("tab-patterns");
+    hideMainViews();
+    el("patterns-section")?.classList.remove("hidden");
+    hideAnalyticsDetail();
+    stopLogsSSE();
+    stopNginxSSE();
+    loadPatterns();
+  });
+}
 
 // ── Log Pattern Clustering (Phase 14) ─────────────────────────────────────────
 async function loadPatterns() {
@@ -2838,12 +3122,14 @@ function init() {
     el("btn-prev").addEventListener("click", () => { stopLogsSSE(); state.page--; startLogsSSE(); loadLogs(); });
     el("btn-next").addEventListener("click", () => { stopLogsSSE(); state.page++; loadLogs(); });
 
-    // Nginx filters
-    el("btn-nginx-apply")?.addEventListener("click", () => { stopNginxSSE(); nginxPage = 0; startNginxSSE(); loadNginxLogs(); });
-    el("btn-nginx-reset")?.addEventListener("click", () => { stopNginxSSE(); resetNginxFilters(); startNginxSSE(); });
-    el("btn-nginx-refresh")?.addEventListener("click", () => { stopNginxSSE(); startNginxSSE(); loadNginxLogs(); });
-    el("btn-nginx-prev")?.addEventListener("click", () => { stopNginxSSE(); nginxPage--; loadNginxLogs(); });
-    el("btn-nginx-next")?.addEventListener("click", () => { stopNginxSSE(); nginxPage++; loadNginxLogs(); });
+    // Gateway/Nginx legacy module controls.
+    if (isFeatureEnabled("gateway")) {
+      el("btn-nginx-apply")?.addEventListener("click", () => { stopNginxSSE(); nginxPage = 0; startNginxSSE(); loadNginxLogs(); });
+      el("btn-nginx-reset")?.addEventListener("click", () => { stopNginxSSE(); resetNginxFilters(); startNginxSSE(); });
+      el("btn-nginx-refresh")?.addEventListener("click", () => { stopNginxSSE(); startNginxSSE(); loadNginxLogs(); });
+      el("btn-nginx-prev")?.addEventListener("click", () => { stopNginxSSE(); nginxPage--; loadNginxLogs(); });
+      el("btn-nginx-next")?.addEventListener("click", () => { stopNginxSSE(); nginxPage++; loadNginxLogs(); });
+    }
     // Analytics controls
     el("analytics-hours-select")?.addEventListener("change", () => { 
       hideAnalyticsDetail(); 
@@ -2870,13 +3156,16 @@ function init() {
         level: level 
       });
     });
-    // Nginx analytics controls
-    el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseFloat(e.target.value); loadNginxAnalytics(); });
-    el("btn-nginx-analytics-refresh")?.addEventListener("click", loadNginxAnalytics);
+    if (isFeatureEnabled("gateway")) {
+      el("nginx-hours-select")?.addEventListener("change", e => { nginxAnalyticsHours = parseFloat(e.target.value); loadNginxAnalytics(); });
+      el("btn-nginx-analytics-refresh")?.addEventListener("click", loadNginxAnalytics);
+    }
 
     // Refresh
     el("btn-refresh").addEventListener("click", refresh);
-    el("btn-patterns-load")?.addEventListener("click", loadPatterns);
+    if (isFeatureEnabled("patterns")) {
+      el("btn-patterns-load")?.addEventListener("click", loadPatterns);
+    }
 
     // Clear DB (admin only)
     el("btn-clear-db").addEventListener("click", openClearModal);
@@ -2938,7 +3227,6 @@ function init() {
       loadNotifications();
       loadContainerAliases();
       initSSE();
-      startLogsSSE();
       refresh();
       setInterval(refresh, 30_000);
       setInterval(loadNotifications, 60_000);
@@ -2954,9 +3242,10 @@ async function refresh() {
     if (btn) btn.textContent = "↻ …";
     await Promise.all([
       loadContainerAliases(),
+      loadOverview(),
       loadMetrics(),
       loadContainerList(),
-      loadLogs()
+      state.view === "logs" ? loadLogs() : Promise.resolve()
     ]);
     if (btn) btn.textContent = "↻ Refresh";
   } catch (e) {

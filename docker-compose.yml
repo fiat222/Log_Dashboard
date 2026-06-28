@@ -213,7 +213,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost/health" ]
+      test: [ "CMD", "curl", "-fsS", "http://localhost/health" ]
       interval: 30s
       timeout: 10s
       retries: 3

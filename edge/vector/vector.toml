@@ -1,0 +1,42 @@
+data_dir = "/var/lib/vector"
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+
+[sources.docker_logs]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+
+[transforms.add_edge_metadata]
+type = "remap"
+inputs = ["docker_logs"]
+source = '''
+.edge_host_id = get_env_var!("EDGE_HOST_ID")
+.edge_site = get_env_var("EDGE_SITE") ?? "default"
+.edge_env = get_env_var("EDGE_ENV") ?? "dev"
+
+if exists(.label."com.docker.compose.project") {
+  .compose_project = .label."com.docker.compose.project"
+}
+
+if exists(.label."com.docker.compose.service") {
+  .compose_service = .label."com.docker.compose.service"
+}
+
+if exists(.container_id) {
+  .instance_key = .container_id
+}
+
+if exists(.compose_project) && exists(.compose_service) {
+  .service_key = join!([.edge_host_id, .compose_project, .compose_service], separator: "/")
+}
+'''
+
+[sinks.central_otlp]
+type = "opentelemetry"
+inputs = ["add_edge_metadata"]
+endpoint = "${CENTRAL_OTEL_ENDPOINT}"
+protocol = "http"
+healthcheck.enabled = true
+

@@ -118,7 +118,8 @@
       <!-- Header -->
       <header id="metric-bar">
         <div class="view-tabs">
-          <button id="tab-logs" class="tab-btn active">Logs</button>
+          <button id="tab-overview" class="tab-btn active">Overview</button>
+          <button id="tab-logs" class="tab-btn">Logs</button>
           <button id="tab-analytics" class="tab-btn">Analytics</button>
           <button id="tab-nginx" class="tab-btn hidden">Nginx</button>
           <button id="tab-patterns" class="tab-btn hidden">Patterns</button>
@@ -178,6 +179,53 @@
         <button id="btn-clear-db" class="btn-danger hidden">Clear DB</button>
         <button id="btn-refresh" class="btn-secondary">↻ Refresh</button>
       </header>
+
+      <!-- Overview Section (Default landing page) -->
+      <section id="overview-section" class="overview-shell">
+        <div class="overview-hero">
+          <div>
+            <p class="overview-eyebrow">Centralized observability</p>
+            <h1>Service health at a glance</h1>
+            <p class="overview-copy">Hosts, services, active instances, and error pressure from the log pipeline.</p>
+          </div>
+          <div id="overview-status-pill" class="overview-status quiet">Quiet</div>
+        </div>
+
+        <div class="overview-grid" id="overview-kpis">
+          <article class="overview-card"><span class="overview-label">Hosts</span><strong id="ov-hosts">—</strong></article>
+          <article class="overview-card"><span class="overview-label">Services</span><strong id="ov-services">—</strong></article>
+          <article class="overview-card"><span class="overview-label">Active instances</span><strong id="ov-active">—</strong></article>
+          <article class="overview-card danger"><span class="overview-label">Errors</span><strong id="ov-errors">—</strong></article>
+        </div>
+
+        <div class="overview-panels">
+          <section class="overview-panel">
+            <div class="overview-panel-head">
+              <div>
+                <p class="overview-eyebrow">Attention</p>
+                <h2>Services with errors</h2>
+              </div>
+              <span id="ov-error-count" class="overview-chip">0 services</span>
+            </div>
+            <div id="overview-error-services" class="overview-list">
+              <div class="overview-empty">No service errors in this window.</div>
+            </div>
+          </section>
+
+          <section class="overview-panel">
+            <div class="overview-panel-head">
+              <div>
+                <p class="overview-eyebrow">Traffic</p>
+                <h2>Most active services</h2>
+              </div>
+              <span class="overview-chip">last 24h</span>
+            </div>
+            <div id="overview-active-services" class="overview-list">
+              <div class="overview-empty">Waiting for service logs.</div>
+            </div>
+          </section>
+        </div>
+      </section>
 
       <!-- Admin Section (Hidden by default) -->
       <section id="admin-section" class="hidden"
@@ -391,7 +439,7 @@
       </section>
 
       <!-- Logs View -->
-      <div id="logs-view-wrapper" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+      <div id="logs-view-wrapper" class="hidden" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
         <!-- Filter bar -->
         <section id="filter-bar">
           <div class="filter-group">
@@ -729,6 +777,9 @@
     </div>
   </div>
 
+  <script src="src/api.js"></script>
+  <script src="src/overview.js"></script>
+  <script src="src/logs.js"></script>
   <script src="app.js"></script>
 </body>
 

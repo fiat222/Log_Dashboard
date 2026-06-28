@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE - throwaway UI mockup.
+  Three responsive variants for an IndustryOS-style observability dashboard,
+  switchable via ?variant=A|B|C on one static route.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Dashboard - IndustryOS Prototype</title>
+  <style>
+    :root {
+      --bg: #090b0b;
+      --panel: #121616;
+      --panel-2: #171d1c;
+      --panel-3: #1d2422;
+      --line: #2a3431;
+      --line-strong: #3b4742;
+      --text: #f0f4ef;
+      --muted: #8f9a95;
+      --dim: #59645f;
+      --cyan: #52d4c8;
+      --oxide: #d47445;
+      --yellow: #f2c45c;
+      --green: #70d36b;
+      --red: #ef5d5d;
+      --ink: #070909;
+      --radius: 8px;
+      --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      letter-spacing: 0;
+    }
+
+    body {
+      overflow-x: hidden;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .prototype {
+      min-height: 100vh;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px) 0 0 / 56px 56px,
+        linear-gradient(0deg, rgba(255, 255, 255, .018) 1px, transparent 1px) 0 0 / 56px 56px,
+        var(--bg);
+    }
+
+    .variant {
+      display: none;
+      min-height: 100vh;
+    }
+
+    .variant.is-active {
+      display: block;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .side {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 18px 14px;
+      background: rgba(10, 13, 13, .96);
+      border-right: 1px solid var(--line);
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      background: var(--panel-2);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .brand-name {
+      min-width: 0;
+    }
+
+    .brand-name strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .brand-name span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 5px;
+      margin-bottom: 20px;
+    }
+
+    .nav-title,
+    .label {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 34px;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .nav-item.is-active {
+      border-color: var(--line-strong);
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .badge.good {
+      border-color: rgba(112, 211, 107, .35);
+      color: var(--green);
+    }
+
+    .badge.warn {
+      border-color: rgba(242, 196, 92, .45);
+      color: var(--yellow);
+    }
+
+    .badge.bad {
+      border-color: rgba(239, 93, 93, .45);
+      color: var(--red);
+    }
+
+    .badge.live {
+      border-color: rgba(82, 212, 200, .45);
+      color: var(--cyan);
+    }
+
+    .side-stat {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .side-stat strong {
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 18px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .eyebrow {
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      margin-top: 4px;
+      font-size: clamp(26px, 4vw, 48px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 17px;
+      line-height: 1.2;
+    }
+
+    h3 {
+      font-size: 13px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .tool,
+    .icon-btn {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    .tool {
+      padding: 7px 10px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .icon-btn {
+      display: inline-grid;
+      width: 34px;
+      place-items: center;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .metric-value {
+      margin-top: 10px;
+      font-family: var(--mono);
+      font-size: clamp(22px, 3vw, 32px);
+      line-height: 1;
+    }
+
+    .metric-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: rgba(18, 22, 22, .94);
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 48px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-body {
+      padding: 14px;
+    }
+
+    .control-grid {
+      grid-template-columns: minmax(0, 1.55fr) minmax(300px, .8fr);
+      margin-top: 14px;
+    }
+
+    .chart {
+      position: relative;
+      min-height: 315px;
+      padding: 18px 14px 14px;
+      overflow: hidden;
+    }
+
+    .chart svg {
+      display: block;
+      width: 100%;
+      height: 260px;
+    }
+
+    .axis-line {
+      stroke: rgba(255, 255, 255, .08);
+      stroke-width: 1;
+    }
+
+    .series {
+      fill: none;
+      stroke: var(--cyan);
+      stroke-width: 3;
+      filter: drop-shadow(0 0 8px rgba(82, 212, 200, .4));
+    }
+
+    .series.warn {
+      stroke: var(--oxide);
+      filter: drop-shadow(0 0 8px rgba(212, 116, 69, .32));
+    }
+
+    .chart-note {
+      position: absolute;
+      right: 18px;
+      top: 18px;
+      max-width: 220px;
+      padding: 10px;
+      border: 1px solid rgba(242, 196, 92, .35);
+      background: rgba(20, 18, 12, .86);
+      color: var(--yellow);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .event-list,
+    .insight-list,
+    .lane-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .event {
+      display: grid;
+      grid-template-columns: 72px 1fr auto;
+      gap: 10px;
+      align-items: start;
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .event time,
+    .mono {
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .event code {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .ai-panel {
+      background:
+        linear-gradient(180deg, rgba(82, 212, 200, .08), transparent 42%),
+        var(--panel);
+    }
+
+    .insight {
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: rgba(7, 9, 9, .35);
+    }
+
+    .insight strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .insight p {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .plant-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(360px, .9fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .plant-map {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(110px, 1fr));
+      grid-auto-rows: minmax(118px, auto);
+      gap: 10px;
+    }
+
+    .machine {
+      position: relative;
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .machine.is-hot {
+      border-color: rgba(239, 93, 93, .5);
+      background: linear-gradient(180deg, rgba(239, 93, 93, .1), var(--panel));
+    }
+
+    .machine.is-warn {
+      border-color: rgba(242, 196, 92, .45);
+    }
+
+    .machine .temp {
+      position: absolute;
+      right: 10px;
+      top: 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .machine strong {
+      display: block;
+      padding-right: 48px;
+      font-size: 13px;
+    }
+
+    .machine .bar {
+      height: 6px;
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      background: var(--ink);
+    }
+
+    .machine .bar span {
+      display: block;
+      height: 100%;
+      background: var(--cyan);
+    }
+
+    .machine.is-hot .bar span {
+      background: var(--red);
+    }
+
+    .machine.is-warn .bar span {
+      background: var(--yellow);
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .data-table th,
+    .data-table td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .data-table th {
+      color: var(--dim);
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .incident-shell {
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr) 320px;
+      min-height: 100vh;
+    }
+
+    .incident-queue,
+    .incident-actions {
+      padding: 16px;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      overflow: auto;
+    }
+
+    .incident-actions {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .incident-main {
+      min-width: 0;
+      padding: 18px;
+    }
+
+    .queue-card {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .queue-card.is-selected {
+      border-color: rgba(82, 212, 200, .55);
+    }
+
+    .queue-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .timeline {
+      position: relative;
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .timeline::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 13px;
+      width: 1px;
+      content: "";
+      background: var(--line-strong);
+    }
+
+    .timeline-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 36px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .dot {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 26px;
+      height: 26px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      background: var(--bg);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .timeline-card {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .remedy {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .check span:first-child {
+      display: grid;
+      width: 18px;
+      height: 18px;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .split-two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .proto-switcher {
+      position: fixed;
+      z-index: 20;
+      left: 50%;
+      bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid rgba(82, 212, 200, .35);
+      border-radius: 999px;
+      background: rgba(7, 9, 9, .92);
+      box-shadow: 0 14px 38px rgba(0, 0, 0, .42);
+      transform: translateX(-50%);
+    }
+
+    .proto-switcher button {
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .proto-switcher .switch-label {
+      min-width: 190px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1180px) {
+      .app-shell {
+        grid-template-columns: 210px minmax(0, 1fr);
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .control-grid,
+      .plant-layout,
+      .incident-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .incident-queue,
+      .incident-actions {
+        border: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .plant-map {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app-shell {
+        display: block;
+      }
+
+      .side {
+        position: static;
+        height: auto;
+        padding: 12px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav-group {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+
+      .nav-title,
+      .side-stat {
+        display: none;
+      }
+
+      .nav-item {
+        flex: 0 0 auto;
+      }
+
+      .main,
+      .incident-main,
+      .incident-queue,
+      .incident-actions {
+        padding: 12px;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      .metrics,
+      .split-two,
+      .plant-map {
+        grid-template-columns: 1fr;
+      }
+
+      .event {
+        grid-template-columns: 1fr;
+      }
+
+      .chart {
+        min-height: 260px;
+      }
+
+      .chart svg {
+        height: 210px;
+      }
+
+      .chart-note {
+        position: static;
+        max-width: none;
+        margin: 0 14px 14px;
+      }
+
+      .proto-switcher {
+        width: calc(100vw - 24px);
+        justify-content: space-between;
+      }
+
+      .proto-switcher .switch-label {
+        min-width: 0;
+        white-space: normal;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype">
+    <section class="variant is-active" data-variant="A" aria-label="Control room variant">
+      <div class="app-shell">
+        <aside class="side">
+          <div class="brand">
+            <div class="brand-mark">LD</div>
+            <div class="brand-name">
+              <strong>Log Dashboard</strong>
+              <span>OTEL CONTROL ROOM</span>
+            </div>
+          </div>
+          <nav class="nav-group" aria-label="Primary">
+            <div class="nav-title">Operations</div>
+            <a class="nav-item is-active" href="#"><span>Overview</span><span class="badge live">Live</span></a>
+            <a class="nav-item" href="#"><span>Logs</span><span>18k</span></a>
+            <a class="nav-item" href="#"><span>Analytics</span><span>4</span></a>
+            <a class="nav-item" href="#"><span>Nginx</span><span>2.1k</span></a>
+            <a class="nav-item" href="#"><span>Admin</span><span>Ops</span></a>
+          </nav>
+          <div class="side-stat">
+            <span class="label">Ingestion health</span>
+            <strong>98.7%</strong>
+            <span class="muted">ClickHouse queue below risk threshold</span>
+          </div>
+        </aside>
+
+        <div class="main">
+          <header class="topbar">
+            <div>
+              <div class="eyebrow">PSU central observability</div>
+              <h1>Industrial log operations</h1>
+            </div>
+            <div class="toolbar">
+              <button class="tool">Last 15 min</button>
+              <button class="tool">All stacks</button>
+              <button class="icon-btn" aria-label="Refresh">R</button>
+            </div>
+          </header>
+
+          <section class="grid metrics" aria-label="Key metrics">
+            <div class="metric">
+              <span class="label">Events / min</span>
+              <div class="metric-value">42.8k</div>
+              <div class="metric-foot"><span>+12.4%</span><span class="badge good">Normal</span></div>
+            </div>
+            <div class="metric">
+              <span class="label">Critical logs</span>
+              <div class="metric-value">18</div>
+              <div class="metric-foot"><span>3 services</span><span class="badge bad">Hot</span></div>
+            </div>
+            <div class="metric">
+              <span class="label">P95 latency</span>
+              <div class="metric-value">286ms</div>
+              <div class="metric-foot"><span>Nginx edge</span><span class="badge warn">Watch</span></div>
+            </div>
+            <div class="metric">
+              <span class="label">Collectors</span>
+              <div class="metric-value">24/25</div>
+              <div class="metric-foot"><span>one stale VM</span><span class="badge warn">Degraded</span></div>
+            </div>
+          </section>
+
+          <section class="grid control-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>Telemetry pressure</h2>
+                <span class="badge live">Streaming</span>
+              </div>
+              <div class="chart">
+                <svg viewBox="0 0 780 260" role="img" aria-label="Telemetry pressure chart">
+                  <path class="axis-line" d="M20 40 H760 M20 95 H760 M20 150 H760 M20 205 H760" />
+                  <path class="series" d="M20 190 C80 158 100 160 140 135 S230 120 265 92 345 136 390 116 455 68 520 82 602 160 650 108 706 78 760 44" />
+                  <path class="series warn" d="M20 214 C92 205 148 218 210 192 S310 168 356 176 445 202 502 154 584 140 632 150 706 132 760 100" />
+                </svg>
+                <div class="chart-note">AI flag: gateway queue rose with nginx 5xx burst at 20:24</div>
+              </div>
+            </div>
+
+            <aside class="panel ai-panel">
+              <div class="panel-head">
+                <h2>AI insights</h2>
+                <span class="badge live">4 new</span>
+              </div>
+              <div class="panel-body insight-list">
+                <div class="insight">
+                  <strong>Probable noisy deploy</strong>
+                  <p>`backend-api-2` started repeating auth warnings after image `2026.06.28-rc3`.</p>
+                </div>
+                <div class="insight">
+                  <strong>Likely upstream lag</strong>
+                  <p>Edge `lab-vm-07` stopped shipping Docker logs 11 minutes ago.</p>
+                </div>
+                <div class="insight">
+                  <strong>Next action</strong>
+                  <p>Open trace context around first 5xx spike, then compare with ClickHouse insert retries.</p>
+                </div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="panel" style="margin-top:14px;">
+            <div class="panel-head">
+              <h2>Live event stream</h2>
+              <span class="badge">Filtered: severity >= warn</span>
+            </div>
+            <div class="panel-body event-list">
+              <div class="event"><time>20:31:44</time><code>backend-api /auth/session cookie refresh failed for stale Redis key</code><span class="badge warn">warn</span></div>
+              <div class="event"><time>20:30:12</time><code>otel-gateway exporter queue depth reached 72% during ingest burst</code><span class="badge warn">warn</span></div>
+              <div class="event"><time>20:28:09</time><code>nginx edge returned 502 for /logstore/api/query after upstream timeout</code><span class="badge bad">error</span></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="variant" data-variant="B" aria-label="Machine grid variant">
+      <div class="app-shell">
+        <aside class="side">
+          <div class="brand">
+            <div class="brand-mark">IO</div>
+            <div class="brand-name">
+              <strong>IndustryOS View</strong>
+              <span>SITE: PSU-EILA</span>
+            </div>
+          </div>
+          <nav class="nav-group">
+            <div class="nav-title">Plant zones</div>
+            <a class="nav-item is-active" href="#"><span>Central stack</span><span class="badge good">OK</span></a>
+            <a class="nav-item" href="#"><span>Edge VMs</span><span class="badge warn">1</span></a>
+            <a class="nav-item" href="#"><span>Nginx gateway</span><span class="badge bad">2</span></a>
+            <a class="nav-item" href="#"><span>Backups</span><span class="badge good">OK</span></a>
+          </nav>
+          <div class="side-stat">
+            <span class="label">Plant throughput</span>
+            <strong>1.86M</strong>
+            <span class="muted">records indexed this hour</span>
+          </div>
+        </aside>
+
+        <div class="main">
+          <header class="topbar">
+            <div>
+              <div class="eyebrow">Fleet telemetry map</div>
+              <h1>Machine-level observability</h1>
+            </div>
+            <div class="toolbar">
+              <button class="tool">Group by service</button>
+              <button class="tool">Severity heat</button>
+            </div>
+          </header>
+
+          <section class="grid plant-layout">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>Runtime cells</h2>
+                <span class="badge">24 services</span>
+              </div>
+              <div class="panel-body plant-map">
+                <div class="machine"><span class="temp">61%</span><strong>backend-api</strong><p class="muted">4 instances</p><div class="bar"><span style="width:61%"></span></div></div>
+                <div class="machine is-hot"><span class="temp">94%</span><strong>nginx-edge</strong><p class="muted">5xx burst</p><div class="bar"><span style="width:94%"></span></div></div>
+                <div class="machine"><span class="temp">42%</span><strong>redis</strong><p class="muted">cache stable</p><div class="bar"><span style="width:42%"></span></div></div>
+                <div class="machine is-warn"><span class="temp">78%</span><strong>otel-gateway</strong><p class="muted">queue rising</p><div class="bar"><span style="width:78%"></span></div></div>
+                <div class="machine"><span class="temp">52%</span><strong>clickhouse</strong><p class="muted">merge healthy</p><div class="bar"><span style="width:52%"></span></div></div>
+                <div class="machine"><span class="temp">36%</span><strong>vector-main</strong><p class="muted">shipping</p><div class="bar"><span style="width:36%"></span></div></div>
+                <div class="machine is-warn"><span class="temp">0%</span><strong>lab-vm-07</strong><p class="muted">stale agent</p><div class="bar"><span style="width:8%"></span></div></div>
+                <div class="machine"><span class="temp">25%</span><strong>backup</strong><p class="muted">idle</p><div class="bar"><span style="width:25%"></span></div></div>
+              </div>
+            </div>
+
+            <aside class="panel">
+              <div class="panel-head">
+                <h2>Selected cell</h2>
+                <span class="badge bad">nginx-edge</span>
+              </div>
+              <div class="panel-body grid">
+                <div class="grid split-two">
+                  <div class="metric"><span class="label">5xx</span><div class="metric-value">214</div><div class="metric-foot"><span>15 min</span></div></div>
+                  <div class="metric"><span class="label">P99</span><div class="metric-value">1.8s</div><div class="metric-foot"><span>gateway</span></div></div>
+                </div>
+                <div class="insight">
+                  <strong>Observed relation</strong>
+                  <p>Requests to `/logstore/api/query` slowed 3 minutes before container warnings began.</p>
+                </div>
+                <div class="insight">
+                  <strong>Suggested filter</strong>
+                  <p>website = monitor-eila.psu.ac.th AND status >= 500</p>
+                </div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="panel" style="margin-top:14px;">
+            <div class="panel-head">
+              <h2>Service telemetry table</h2>
+              <span class="badge live">Auto-refresh</span>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Service</th><th>Rate</th><th>Error</th><th>Latency</th><th>Owner</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>nginx-edge</td><td>8.3k/m</td><td>3.1%</td><td>1.8s</td><td>platform</td><td><span class="badge bad">hot</span></td></tr>
+                  <tr><td>otel-gateway</td><td>42.8k/m</td><td>0.2%</td><td>184ms</td><td>infra</td><td><span class="badge warn">watch</span></td></tr>
+                  <tr><td>backend-api</td><td>2.9k/m</td><td>0.8%</td><td>286ms</td><td>platform</td><td><span class="badge warn">watch</span></td></tr>
+                  <tr><td>clickhouse</td><td>39.2k/m</td><td>0.0%</td><td>91ms</td><td>db</td><td><span class="badge good">ok</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="variant" data-variant="C" aria-label="Incident triage variant">
+      <div class="incident-shell">
+        <aside class="incident-queue">
+          <div class="brand">
+            <div class="brand-mark">IR</div>
+            <div class="brand-name">
+              <strong>Incident room</strong>
+              <span>LIVE TRIAGE</span>
+            </div>
+          </div>
+          <div class="label">Active incidents</div>
+          <div class="queue-card is-selected">
+            <div class="queue-top"><strong>Nginx 5xx burst</strong><span class="badge bad">P1</span></div>
+            <p class="muted">Gateway upstream errors affecting log queries.</p>
+            <span class="mono">opened 11m ago</span>
+          </div>
+          <div class="queue-card">
+            <div class="queue-top"><strong>Collector stale</strong><span class="badge warn">P2</span></div>
+            <p class="muted">lab-vm-07 stopped sending Docker events.</p>
+            <span class="mono">opened 19m ago</span>
+          </div>
+          <div class="queue-card">
+            <div class="queue-top"><strong>Auth warning noise</strong><span class="badge warn">P3</span></div>
+            <p class="muted">Repeated Redis session misses after deploy.</p>
+            <span class="mono">opened 27m ago</span>
+          </div>
+        </aside>
+
+        <section class="incident-main">
+          <header class="topbar">
+            <div>
+              <div class="eyebrow">Root cause workbench</div>
+              <h1>Nginx 5xx burst</h1>
+            </div>
+            <div class="toolbar">
+              <button class="tool">Open logs</button>
+              <button class="tool">Create note</button>
+            </div>
+          </header>
+
+          <section class="grid metrics">
+            <div class="metric"><span class="label">Impact</span><div class="metric-value">7.4%</div><div class="metric-foot"><span>query failures</span></div></div>
+            <div class="metric"><span class="label">First seen</span><div class="metric-value">20:20</div><div class="metric-foot"><span>Asia/Bangkok</span></div></div>
+            <div class="metric"><span class="label">Related logs</span><div class="metric-value">1.2k</div><div class="metric-foot"><span>clustered</span></div></div>
+            <div class="metric"><span class="label">Confidence</span><div class="metric-value">82%</div><div class="metric-foot"><span>AI analysis</span></div></div>
+          </section>
+
+          <div class="grid split-two" style="margin-top:14px;">
+            <div class="panel">
+              <div class="panel-head"><h2>Evidence timeline</h2><span class="badge live">Correlated</span></div>
+              <div class="panel-body timeline">
+                <div class="timeline-row"><div class="dot">1</div><div class="timeline-card"><strong>20:19:52</strong><p class="muted">backend deploy finished, new auth warnings begin.</p></div></div>
+                <div class="timeline-row"><div class="dot">2</div><div class="timeline-card"><strong>20:22:10</strong><p class="muted">Nginx upstream response time crosses 1 second.</p></div></div>
+                <div class="timeline-row"><div class="dot">3</div><div class="timeline-card"><strong>20:24:38</strong><p class="muted">ClickHouse query endpoint returns 502 for admin users.</p></div></div>
+                <div class="timeline-row"><div class="dot">4</div><div class="timeline-card"><strong>20:30:12</strong><p class="muted">OTel exporter queue reaches watch threshold.</p></div></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><h2>Log cluster</h2><span class="badge bad">502</span></div>
+              <div class="panel-body event-list">
+                <div class="event"><time>20:24</time><code>upstream timed out while reading response header from backend:8000</code><span class="badge bad">error</span></div>
+                <div class="event"><time>20:25</time><code>query killed by timeout after role scope filter expansion</code><span class="badge warn">warn</span></div>
+                <div class="event"><time>20:26</time><code>redis session lookup exceeded soft limit</code><span class="badge warn">warn</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="incident-actions">
+          <div class="panel-head" style="padding-left:0;padding-right:0;">
+            <h2>Resolution plan</h2>
+            <span class="badge warn">Draft</span>
+          </div>
+          <div class="remedy">
+            <div class="check"><span>1</span><p>Compare query plan for scoped container filter before and after deploy.</p></div>
+            <div class="check"><span>2</span><p>Restart one backend worker and watch 502 rate for 2 minutes.</p></div>
+            <div class="check"><span>3</span><p>Throttle live refresh if ClickHouse queue remains above 70%.</p></div>
+            <div class="check"><span>4</span><p>Attach incident note to admin notifications stream.</p></div>
+          </div>
+          <div class="panel" style="margin-top:14px;">
+            <div class="panel-head"><h2>Owner</h2></div>
+            <div class="panel-body">
+              <p class="muted">Platform team</p>
+              <p class="mono" style="margin-top:8px;">SLA breach in 18m</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <div class="proto-switcher" aria-label="Prototype variant switcher">
+      <button type="button" data-dir="-1" aria-label="Previous variant">&lt;</button>
+      <div class="switch-label" id="variant-label">A - Control room</div>
+      <button type="button" data-dir="1" aria-label="Next variant">&gt;</button>
+    </div>
+  </main>
+
+  <script>
+    const variants = [
+      { key: "A", name: "Control room" },
+      { key: "B", name: "Machine grid" },
+      { key: "C", name: "Incident triage" }
+    ];
+
+    const params = new URLSearchParams(window.location.search);
+    let active = variants.findIndex((item) => item.key === (params.get("variant") || "A").toUpperCase());
+    if (active < 0) active = 0;
+
+    function renderVariant() {
+      const current = variants[active];
+      document.querySelectorAll("[data-variant]").forEach((section) => {
+        section.classList.toggle("is-active", section.dataset.variant === current.key);
+      });
+      document.getElementById("variant-label").textContent = `${current.key} - ${current.name}`;
+      const url = new URL(window.location.href);
+      url.searchParams.set("variant", current.key);
+      window.history.replaceState({}, "", url);
+    }
+
+    function moveVariant(dir) {
+      active = (active + dir + variants.length) % variants.length;
+      renderVariant();
+    }
+
+    document.querySelectorAll(".proto-switcher button").forEach((button) => {
+      button.addEventListener("click", () => moveVariant(Number(button.dataset.dir)));
+    });
+
+    window.addEventListener("keydown", (event) => {
+      const tag = event.target && event.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || event.target.isContentEditable) return;
+      if (event.key === "ArrowLeft") moveVariant(-1);
+      if (event.key === "ArrowRight") moveVariant(1);
+    });
+
+    renderVariant();
+  </script>
+</body>
+</html>

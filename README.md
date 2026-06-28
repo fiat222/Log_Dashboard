@@ -2,6 +2,8 @@
 
 Centralized container log ingestion, search, and analytics stack. OpenTelemetry pipeline → ClickHouse columnar storage → FastAPI role-based query layer → Nginx SPA.
 
+> Project direction: this repository is being organized into a self-hosted centralized observability platform with a central stack and edge agent stack. Start with `docs/README.md`, `docs/project-charter.md`, and `docs/project-structure.md` for the current roadmap and repository layout.
+
 ---
 
 ## Stack

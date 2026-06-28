@@ -1,0 +1,13 @@
+{
+  "name": "logs-dashboard-platform",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}
+

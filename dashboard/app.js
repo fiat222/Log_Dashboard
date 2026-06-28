@@ -2712,7 +2712,7 @@ function setActiveTab(tabId) {
 }
 
 function hideMainViews() {
-  ["overview-section", "logs-view-wrapper", "analytics-section", "admin-section", "nginx-view-wrapper", "patterns-section"].forEach(id => {
+  ["overview-section", "platform-section", "logs-view-wrapper", "analytics-section", "admin-section", "nginx-view-wrapper", "patterns-section"].forEach(id => {
     el(id)?.classList.add("hidden");
   });
 }
@@ -2737,8 +2737,18 @@ function activateLogsView() {
   stopNginxSSE();
   startLogsSSE();
 }
+function activatePlatformView() {
+  state.view = "platform";
+  setActiveTab("tab-platform");
+  hideMainViews();
+  el("platform-section")?.classList.remove("hidden");
+  hideAnalyticsDetail();
+  stopLogsSSE();
+  stopNginxSSE();
+}
 
 el("tab-overview")?.addEventListener("click", activateOverviewView);
+el("tab-platform")?.addEventListener("click", activatePlatformView);
 
 el("tab-logs").addEventListener("click", () => {
   activateLogsView();
@@ -2848,7 +2858,23 @@ if (isFeatureEnabled("patterns")) {
   });
 }
 
+document.querySelectorAll(".platform-action").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const action = btn.dataset.platformAction;
+    if (action === "nginx" && !el("tab-nginx")?.classList.contains("hidden")) {
+      el("tab-nginx")?.click();
+      return;
+    }
+    if (action === "admin" && !el("tab-admin")?.classList.contains("hidden")) {
+      el("tab-admin")?.click();
+      return;
+    }
+    activateLogsView();
+  });
+});
+
 // ── Log Pattern Clustering (Phase 14) ─────────────────────────────────────────
+
 async function loadPatterns() {
   const minutes = parseInt(el("patterns-minutes")?.value || "60", 10);
   const container = state.stackNames.length === 1 ? state.stackNames[0] : "";

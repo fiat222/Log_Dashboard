@@ -68,3 +68,15 @@ def test_legacy_inline_log_renderer_is_commented_out():
 
     assert "Legacy inline renderer moved to dashboard/src/logs.js" in source
     assert "bindLogRowActions(tbody);\n  return;" not in source
+
+
+def test_platform_shell_is_wired_to_navigation():
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    source = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+
+    assert "tab-platform" in html
+    assert "platform-section" in html
+    assert "data-platform-action" in html
+    assert "function activatePlatformView()" in source
+    assert "platform-section" in source
+    assert 'document.querySelectorAll(".platform-action")' in source

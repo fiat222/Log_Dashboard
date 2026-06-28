@@ -120,6 +120,7 @@
         <div class="view-tabs">
           <button id="tab-overview" class="tab-btn active">Overview</button>
           <button id="tab-logs" class="tab-btn">Logs</button>
+          <button id='tab-platform' class='tab-btn'>Platform</button>
           <button id="tab-analytics" class="tab-btn">Analytics</button>
           <button id="tab-nginx" class="tab-btn hidden">Nginx</button>
           <button id="tab-patterns" class="tab-btn hidden">Patterns</button>
@@ -227,6 +228,63 @@
         </div>
       </section>
 
+
+      <!-- Platform Section -->
+      <section id='platform-section' class='platform-shell hidden'>
+        <div class='platform-header'>
+          <div>
+            <p class='overview-eyebrow'>Platform operations</p>
+            <h1>Central stack and edge health</h1>
+            <p class='platform-copy'>Use service identity first, then drill into logs when an operational signal needs investigation.</p>
+          </div>
+          <span class='platform-phase'>Phase 5 shell</span>
+        </div>
+
+        <div class='platform-grid'>
+          <article class='platform-module platform-module-primary'>
+            <div class='platform-module-head'><span class='platform-module-icon'>SVC</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Services</h2>
+            <p>Logical workloads grouped by host, stack, and stable service identity.</p>
+            <button class='platform-action' data-platform-action='logs'>Open service logs</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>INF</span><span class='platform-module-state planned'>Next</span></div>
+            <h2>Infrastructure</h2>
+            <p>Host and container resource views planned for the monitoring phase.</p>
+            <button class='platform-action' data-platform-action='logs'>Investigate via logs</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>GW</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Gateways</h2>
+            <p>Nginx traffic, client IPs, paths, status codes, and response times.</p>
+            <button class='platform-action' data-platform-action='nginx'>Open gateway logs</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>DB</span><span class='platform-module-state planned'>Planned</span></div>
+            <h2>Databases</h2>
+            <p>ClickHouse, PostgreSQL, and Redis health checks will surface here.</p>
+            <button class='platform-action' data-platform-action='admin'>Open admin tools</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>UP</span><span class='platform-module-state planned'>Planned</span></div>
+            <h2>Uptime</h2>
+            <p>Endpoint checks and incident history are reserved for Phase 6.</p>
+            <button class='platform-action' data-platform-action='logs'>Review related logs</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>ALR</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Alerts</h2>
+            <p>Critical notifications remain available from the bell and admin views.</p>
+            <button class='platform-action' data-platform-action='admin'>Open alert controls</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>SET</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Settings</h2>
+            <p>Retention, backup timing, and activity thresholds stay admin-owned.</p>
+            <button class='platform-action' data-platform-action='admin'>Open settings</button>
+          </article>
+        </div>
+      </section>
       <!-- Admin Section (Hidden by default) -->
       <section id="admin-section" class="hidden"
         style="flex:1; overflow-y:auto; padding:20px; background:var(--bg-base);">

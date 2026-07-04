@@ -23,15 +23,15 @@ Use incremental improvement:
 
 ```text
 Existing stable log dashboard
-  โ“
+  v
 Package as central platform
-  โ“
+  v
 Add edge agent bundle
-  โ“
+  v
 Add stable service identity
-  โ“
+  v
 Add monitoring modules
-  โ“
+  v
 Add CI/CD, security, tests, docs
 ```
 
@@ -39,9 +39,13 @@ Add CI/CD, security, tests, docs
 
 Before starting a feature, check `docs/roadmap/2-month-milestones.md` and confirm the work belongs to the current phase.
 
-Current phase: **Phase 5 - Platform UI Shell, in progress**.
+Current phase: **Phase 6.1 - Visible Metrics Layer, pending browser verification**.
 
-If the work does not support the current phase, treat it as a scope change and use BMAD before building.
+If the work does not support the current phase, treat it as a scope change and write a lightweight decision review before building.
+
+Phase 5.5 rule: UI redesign work must improve every touched page as a real operator workflow, not as decoration. Admin-facing UI must avoid PSU/EILA-specific wording, URLs, and ownership assumptions; use generic provider and registry language instead.
+
+Phase 6 rule: do not close a monitoring slice from backend/API existence alone. The browser must show visible operational value and at least one useful drill-down path when the slice claims to improve incident investigation.
 ## Standard AI-Assisted Loop
 
 Every meaningful feature follows this loop:
@@ -220,7 +224,6 @@ Every completed loop updates at least one relevant doc:
 - `docs/deployment/install-central.md`
 - `docs/deployment/install-edge.md`
 - `docs/testing/testing-strategy.md`
-- `docs/workflows/bmad-usage.md`
 - `docs/user-guide/dashboard-guide.md`
 
 ## 9. Demo Scenario
@@ -244,6 +247,21 @@ Short name.
 What the evaluator should see.
 ```
 
+## Phase Boundary Verification
+
+At the end of a phase, use this exact verification flow before starting the next phase:
+
+1. Run docker compose up -d --build.
+2. Run docker system prune.
+3. Tell the user exactly what to verify in the webpage.
+4. Let the user verify the running stack in the browser.\n5. Only after the user approves and says to continue, run docker compose down.
+
+Rules:
+
+- Use this flow at phase boundaries, not for every small edit or inner-loop test.
+- Do not run docker compose down before user approval to continue.
+- Treat docker system prune as user-approved for this workflow, even though it is broader than image prune.
+
 ## 10. Review
 
 End each loop with:
@@ -260,11 +278,11 @@ End each loop with:
 ### Next loop
 ```
 
-## BMAD Usage Policy
+## Lightweight Review Policy
 
-Use BMAD to reduce user approval burden for decisions that affect more than one module, more than one phase, or the final demo. The agent may proceed after BMAD/self-review for normal planned work. User approval is still required for phase gates, destructive operations, deployment promotion, data deletion, migrations, auth/security policy changes, or scope changes.
+Use lightweight self-review for decisions that affect more than one module, more than one phase, or the final demo. Keep the review short: business value, architecture fit, simpler alternative, risks, test evidence.
 
-Use BMAD for large decisions:
+Use lightweight review for large decisions:
 
 - Project charter.
 - Architecture direction.
@@ -273,7 +291,7 @@ Use BMAD for large decisions:
 - Milestone planning.
 - Final report structure.
 
-Avoid BMAD for small tasks:
+Avoid extra review for small tasks:
 
 - CSS tweaks.
 - Small query changes.
@@ -284,6 +302,20 @@ Avoid BMAD for small tasks:
 ## Unclear Scope Rule
 
 Use `grill-with-docs` when the goal, architecture, domain language, or implementation boundary is unclear. The output should sharpen the plan against existing project docs before code changes.
+
+## Discussion Backlog
+
+Record ideas here when they are intentionally deferred until the current plan phase is done.
+
+- Compare geo/WAF options such as BunkerWeb and decide whether they belong in this platform.
+- Decide which edge agents should collect data from different gateways and servers, including Nginx, HAProxy, Apache, and Bull-based workers.
+- Decide how custom alerts should work in the dashboard, including simple email targets and alert rules that reduce MTTD/MTTR.
+- Revisit frontend stack choice after cleanup because the current static SPA is becoming hard to evolve for metric-heavy workflows.
+- Revisit backend modularization/performance after cleanup; do not rewrite the stable ingestion path unless profiling or product needs justify it.
+
+## Jenkins Boundary
+
+Jenkins server/job files are intentionally outside this repository at `D:/PSU/Jenkins`. This project keeps only the repository-facing `Jenkinsfile` and CI helper scripts under `tools/ci/scripts/`.
 ## MVP Boundary
 
 ### Must Have
@@ -324,5 +356,6 @@ Use `grill-with-docs` when the goal, architecture, domain language, or implement
 - Multi-tenant SaaS.
 - Kubernetes-native deployment.
 - Production Authentik integration.
+
 
 

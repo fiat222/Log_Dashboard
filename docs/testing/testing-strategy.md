@@ -100,8 +100,8 @@ Focus:
 
 Initial test entrypoint:
 
-- `tests/backend/unit/`
-- `tests/backend/api/`
+- `tests/apps/api/unit/`
+- `tests/apps/api/api/`
 
 ### Frontend Tests
 

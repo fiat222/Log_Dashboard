@@ -14,13 +14,13 @@ Centralized container log ingestion, search, and analytics stack. OpenTelemetry 
 | `clickhouse` | clickhouse-server:24.3-alpine | Log storage + analytics (columnar, MergeTree) |
 | `otel-gateway` | otel-collector-contrib:0.100.0 | Receives OTLP, transforms, batches → ClickHouse |
 | `vector` | vector:0.54.0-alpine | Reads Docker socket and Nginx Logs → OTLP to gateway |
-| `backend` | backend:${TAG} | FastAPI — auth, role-based ClickHouse proxy, SSE notifications |
-| `log-dashboard` | dashboard:${TAG} | Docker Nginx — serves SPA + proxies /logstore/api → backend |
-| `ch-ui` | ch-ui:latest | ClickHouse UI (v2.0.25) — query editor at /logstore/clickhouse/ |
+| `backend` | logs-dashboard-backend:${TAG:-local} | FastAPI — auth, role-based ClickHouse proxy, SSE notifications |
+| `log-dashboard` | dashboard:${TAG:-local} | Docker Nginx — serves SPA + proxies /logstore/api → backend |
+| `ch-ui` | nginxinc/nginx-unprivileged:1.25 | ClickHouse UI proxy surface at /logstore/clickhouse/ |
 | `docker-proxy` | docker-socket-proxy:latest | Read-only Docker API proxy (Events + Containers only) |
-| `backup` | backup:${TAG} | APScheduler-triggered ClickHouse backups |
+| `backup` | logs-dashboard-backup:${TAG:-local} | APScheduler-triggered ClickHouse backups |
 
-> PostgreSQL is hosted externally at `eilapgsql` — not a container in this stack.
+| `postgres` | postgres:16-alpine | Local platform metadata DB for auth, roles, ownership |
 
 ---
 
@@ -32,7 +32,7 @@ INGESTION PIPELINE
 Main VM Docker containers
   └─► vector (Docker socket + Nginx logs) ────────────────────────►┐
                                                                     │
-External VMs (each runs Chores/vector/Docker_logs/)                │
+External VMs (each runs archive/internship/Chores/vector/Docker_logs/)                │
   └─► Vector (Docker socket) → HTTP OTLP → 192.168.116.156:4318 ──►┤
                                                                     ▼
                                                              otel-gateway
@@ -47,13 +47,10 @@ QUERY / ACCESS PATH
 Browser
   │
   ▼
-Host Nginx  (monitor-eila.psu.ac.th — runs on the VM, NOT in Docker)
-  │  /logstore/*  → proxy_pass localhost:8801
-  │  /grafana/*   → Grafana
-  │  /api/*       → Grafana API (or other Host Nginx services)
+Browser
   │
   ▼
-log-dashboard Docker Nginx (:8801, localhost-only, NOT directly browser-accessible)
+log-dashboard Docker Nginx (:8801)
   │  /logstore/api/*         → backend:8000/api/
   │  /logstore/auth/*        → backend:8000/auth/
   │  /logstore/ch-api/*      → clickhouse:8123  (raw HTTP API for ch-ui)
@@ -63,7 +60,7 @@ log-dashboard Docker Nginx (:8801, localhost-only, NOT directly browser-accessib
   ▼
 backend (FastAPI :8000, 4 workers)
   ├── ClickHouse  (SQL queries — role-filtered per user)
-  ├── PostgreSQL  (auth / roles / ownership) — external: eilapgsql
+  ├── PostgreSQL  (auth / roles / ownership) — local `postgres` service
   └── Redis       (sessions / cache)
 ```
 
@@ -77,7 +74,7 @@ backend (FastAPI :8000, 4 workers)
 
 ch-ui SPA is served at `/logstore/clickhouse/` but internally makes root-absolute requests (`/api/auth/session`, `/assets/logo.png`). These would hit Host Nginx (→ Grafana → 404) instead of ch-ui.
 
-**Two-layer fix in `dashboard/nginx.conf.template`:**
+**Two-layer fix in `apps/web/nginx.conf.template`:**
 
 1. **`sub_filter`** — rewrites string literals in HTML/JS/CSS at proxy time:
    - `/assets/` → `/logstore/clickhouse/assets/`
@@ -125,17 +122,17 @@ Old schema `logs.container_logs` (Filebeat era) — may still exist on the serve
 
 | File | Purpose |
 |------|---------|
-| `dashboard/app.js` | All frontend logic — ~2500 lines, single `state` object drives all views |
-| `dashboard/index.html` | DOM: tabs (Logs, Analytics, Nginx, Patterns, Admin), modals |
-| `dashboard/style.css` | CSS vars for light/dark theme (`[data-theme="dark"]`), no framework |
-| `dashboard/nginx.conf.template` | Docker Nginx config — sub_filter path rewriting for ch-ui, all proxy rules |
-| `backend/main.py` | FastAPI — JWT auth, role-based ClickHouse proxy, SSE notifications |
-| `clickhouse/init.sql` | Schema — Null engine ingress + MV + MergeTree storage + viewer_profile |
-| `otel/gateway-config.yaml` | OTel pipeline — receive OTLP, filter blanks, infer severity, batch → ClickHouse |
-| `Chores/vector/Docker_logs/vector.toml` | Vector source config to scrape container logs → OTLP/HTTP sink to gateway |
-| `Chores/vector/vector.toml` | Vector source config to scrape nginx Gateway metrics → OTLP/HTTP sink to gateway |
+| `apps/web/app.js` | All frontend logic — ~2500 lines, single `state` object drives all views |
+| `apps/web/index.html` | DOM: tabs (Logs, Analytics, Nginx, Patterns, Admin), modals |
+| `apps/web/style.css` | CSS vars for light/dark theme (`[data-theme="dark"]`), no framework |
+| `apps/web/nginx.conf.template` | Docker Nginx config — sub_filter path rewriting for ch-ui, all proxy rules |
+| `apps/api/main.py` | FastAPI — JWT auth, role-based ClickHouse proxy, SSE notifications |
+| `infra/clickhouse/init.sql` | Schema — Null engine ingress + MV + MergeTree storage + viewer_profile |
+| `infra/otel/gateway-config.yaml` | OTel pipeline — receive OTLP, filter blanks, infer severity, batch → ClickHouse |
+| `archive/internship/Chores/vector/Docker_logs/vector.toml` | Vector source config to scrape container logs → OTLP/HTTP sink to gateway |
+| `archive/internship/Chores/vector/vector.toml` | Vector source config to scrape nginx Gateway metrics → OTLP/HTTP sink to gateway |
 | `docker-compose.yml` | Full stack — 1 bridge network, resource limits, healthchecks |
-| `backup/backup.sh` | ClickHouse `BACKUP DATABASE` → `/mnt/Logstore_backup` |
+| `apps/backup/backup.sh` | ClickHouse `BACKUP DATABASE` → `/mnt/Logstore_backup` |
 
 ---
 
@@ -169,9 +166,9 @@ docker compose logs -f log-dashboard
 docker compose logs -f ch-ui
 
 # Rebuild all images and push to registry
-./deploy-registry.ps1 <tag>  # build and push to gitlab
+./deploy/deploy-registry.ps1 <tag>  # build and push to gitlab
 
-./deploy.sh <tag>            # deploy with tag
+./deploy/deploy.sh <tag>            # deploy with tag
 
 # Check OTel gateway metrics
 curl http://localhost:8888/metrics
@@ -193,16 +190,15 @@ Copy `.env.example` → `.env` before first run.
 | Variable | Used By |
 |----------|---------|
 | `TAG` | Image tag — backend, dashboard, backup |
-| `REGISTRY_IMAGE_PATH` | Private registry prefix for all images |
 | `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` / `CLICKHOUSE_DB` | clickhouse, otel-gateway, backend, backup, ch-ui |
 | `REDIS_PASSWORD` | redis, backend |
 | `JWT_SECRET_KEY` | backend — min 32 chars, generate with `openssl rand -hex 32` |
 | `COOKIE_SECURE` | backend — must be `true` in production (HTTPS) |
 | `SESSION_TTL_DAYS` | backend — sliding session window in days |
 | `SUPER_ADMIN_USERNAME` / `SUPER_ADMIN_PASSWORD` | backend — emergency local login (not via SSO) |
-| `AUTHENTIK_BASE_URL` / `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_CLIENT_SECRET` | backend — PSU SSO OAuth2 |
+| `AUTHENTIK_BASE_URL` / `AUTHENTIK_CLIENT_ID` / `AUTHENTIK_CLIENT_SECRET` | backend — optional SSO OAuth2 |
 | `AUTHENTIK_REDIRECT_URI` | backend — must match Authentik application config |
-| `DATABASE_URL` | backend — external PostgreSQL at `eilapgsql`, async connection string |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres, backend — local metadata DB |
 | `APP_BASE_PATH` | backend — must be `/logstore` |
 
 ---
@@ -248,10 +244,10 @@ Key OTel metrics (scrape `:8888/metrics`):
 
 Each external VM runs a standalone Vector container that ships Docker logs to the gateway.
 
-Config lives in `Chores/vector/Docker_logs/` — copy to target VM:
+Config lives in `archive/internship/Chores/vector/Docker_logs/` — copy to target VM:
 
 ```bash
-scp -r Chores/vector/Docker_logs/ user@vm-host:~/vector-agent/
+scp -r archive/internship/Chores/vector/Docker_logs/ user@vm-host:~/vector-agent/
 ssh user@vm-host "cd ~/vector-agent && docker compose up -d"
 ```
 
@@ -270,9 +266,9 @@ curl -X POST http://localhost:8000/api/admin/backup
 Backup files land in `/mnt/Logstore_backup` on the host:
 - `ch_observability_YYYYMMDD_HHMMSS.tar.gz` — ClickHouse database backup
 
-PostgreSQL is hosted externally (`eilapgsql`) — backup managed by that server's DBA.
+PostgreSQL data is stored in the `postgres_data` Docker volume and is managed by the local Compose stack.
 
-See `restore_backup.md` for ClickHouse restore procedure.
+See `docs/deployment/restore-backup.md` for ClickHouse restore procedure.
 
 ---
 

@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Dashboard</title>
+  <meta name="description" content="Self-hosted observability dashboard for container logs, platform health, and incident investigation." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="chart.umd.js"></script>
+</head>
+
+<body>
+  <div id="app">
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="header-top">
+          <span class="logo-text">Log Dashboard</span>
+          <button id="btn-logout" class="btn-logout" style="display:none;">logout</button>
+        </div>
+        <div id="user-pill" class="user-pill" style="display:none;">
+          <span id="user-role-badge" class="role-badge"></span>
+          <span id="user-display-name" class="user-name"></span>
+        </div>
+        <div class="sidebar-legend"
+          style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px;">
+          <span class="sidebar-label">Stacks</span>
+          <button id="btn-new-stack" class="btn-ghost" style="padding: 2px 8px; font-size: 12px;"
+            title="Create New Stack">Add</button>
+        </div>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div id="folder-list">
+          <!-- Skeleton loader (app.js replaces this) -->
+          <div class="skeleton-item"
+            style="height:30px; margin-bottom:4px; opacity:0.1; background:var(--text); border-radius:4px;"></div>
+          <div class="skeleton-item"
+            style="height:30px; margin-bottom:4px; opacity:0.1; background:var(--text); border-radius:4px;"></div>
+          <div class="skeleton-item"
+            style="height:30px; margin-bottom:4px; opacity:0.1; background:var(--text); border-radius:4px;"></div>
+        </div>
+      </div>
+
+      <!-- Settings section (admin/super_admin only) -->
+      <div id="sidebar-settings" class="sidebar-settings hidden"
+        style="border-top:1px solid var(--border); padding:10px; background:var(--bg-elevated); font-size:11px;">
+        <div
+          style="font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;">Settings</div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label>Retention (days)</label>
+            <input type="number" id="setting-ttl" min="1" max="365"
+              style="width:50px; padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);" />
+            <button class="btn-save-setting btn-secondary" data-key="ttl_days" data-src="setting-ttl"
+              style="padding:2px 6px; font-size:10px;">Save</button>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label>Backup Time</label>
+            <select id="setting-backup-hour"
+              style="padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);">
+              <option value="17">00:00</option>
+              <option value="18">01:00</option>
+              <option value="19">02:00</option>
+              <option value="20">03:00</option>
+              <option value="21">04:00</option>
+              <option value="22">05:00</option>
+              <option value="23">06:00</option>
+              <option value="0">07:00</option>
+              <option value="1">08:00</option>
+              <option value="2">09:00</option>
+              <option value="3">10:00</option>
+              <option value="4">11:00</option>
+              <option value="5">12:00</option>
+              <option value="6">13:00</option>
+              <option value="7">14:00</option>
+              <option value="8">15:00</option>
+              <option value="9">16:00</option>
+              <option value="10">17:00</option>
+              <option value="11">18:00</option>
+              <option value="12">19:00</option>
+              <option value="13">20:00</option>
+              <option value="14">21:00</option>
+              <option value="15">22:00</option>
+              <option value="16">23:00</option>
+            </select>
+            <button class="btn-save-setting btn-secondary" data-key="backup_hour_utc" data-src="setting-backup-hour"
+              style="padding:2px 6px; font-size:10px;">Save</button>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label>Green < N sec</label>
+                <input type="number" id="setting-green" min="5" max="3600"
+                  style="width:50px; padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);" />
+                <button class="btn-save-setting btn-secondary" data-key="dot_green_threshold_sec"
+                  data-src="setting-green" style="padding:2px 6px; font-size:10px;">Save</button>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label>Amber < N sec</label>
+                <input type="number" id="setting-amber" min="5" max="3600"
+                  style="width:50px; padding:2px 4px; border:1px solid var(--border); border-radius:3px; background:var(--bg-surface); color:var(--text);" />
+                <button class="btn-save-setting btn-secondary" data-key="dot_amber_threshold_sec"
+                  data-src="setting-amber" style="padding:2px 6px; font-size:10px;">Save</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main id="main">
+
+      <!-- Header -->
+      <header id="metric-bar">
+        <div class="view-tabs">
+          <button id="tab-overview" class="tab-btn active">Overview</button>
+          <button id="tab-logs" class="tab-btn">Logs</button>
+          <button id='tab-platform' class='tab-btn'>Platform</button>
+          <button id="tab-analytics" class="tab-btn">Analytics</button>
+          <button id="tab-nginx" class="tab-btn hidden">Network</button>
+          <button id="tab-patterns" class="tab-btn hidden">Patterns</button>
+          <button id="tab-admin" class="tab-btn hidden">Admin</button>
+        </div>
+
+        <div class="spacer"></div>
+
+        <button id="btn-docs-mini" class="btn-icon-circle hidden" title="User Manual">Docs</button>
+
+        <a id="btn-monitor-linked" class="btn-monitor-dashboard hidden" target="_blank" rel="noopener noreferrer"
+          href="/logstore/monitoring">
+          Monitor Dashboard</a>
+        <a id="btn-clickhouse-linked" class="btn-monitor-dashboard hidden" target="_blank" rel="noopener noreferrer"
+          href="/logstore/clickhouse">
+          ClickHouse</a>
+        <div class="metric-card" id="m-total">
+          <span class="metric-value">--</span>
+          <span class="metric-label">Logs (24h)</span>
+        </div>
+        <div class="metric-card error" id="m-errors">
+          <span class="metric-value">--</span>
+          <span class="metric-label">Errors</span>
+        </div>
+        <div class="metric-card warn" id="m-warnings">
+          <span class="metric-value">--</span>
+          <span class="metric-label">Warnings</span>
+        </div>
+        <div class="metric-card" id="m-containers">
+          <span class="metric-value">--</span>
+          <span class="metric-label">Active Containers</span>
+        </div>
+
+        <button class="btn-icon-circle" id="btn-theme" title="Toggle theme">Theme</button>
+
+        <div class="notif-bell-wrapper" id="notif-wrapper">
+          <button id="btn-notif" class="btn-icon-circle" title="Notifications">
+            Alerts
+            <span id="notif-badge" class="notif-badge hidden">0</span>
+          </button>
+          <!-- Notification dropdown -->
+          <div id="notif-dropdown" class="hidden"
+            style="position:absolute; top:calc(100% + 8px); right:0; width:340px; background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:9999; overflow:hidden;">
+            <div
+              style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; background:var(--bg-elevated);">
+              <span style="font-weight:600; font-size:12px;">Critical Alerts</span>
+              <button id="btn-mark-read" class="btn-ghost" style="font-size:10px; padding:2px 6px;">Mark all
+                read</button>
+            </div>
+            <div id="notif-list" style="max-height:300px; overflow-y:auto;">
+              <div style="padding:20px; text-align:center; color:var(--text-muted); font-size:12px;">No critical alerts
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button id="btn-clear-db" class="btn-danger hidden">Clear DB</button>
+        <button id="btn-refresh" class="btn-secondary">Refresh</button>
+      </header>
+
+      <!-- Overview Section (Default landing page) -->
+      <section id="overview-section" class="overview-shell">
+        <div class="overview-hero">
+          <div>
+            <p class="overview-eyebrow">Centralized monitoring</p>
+            <h1>Monitoring overview</h1>
+            <p class="overview-copy">Current health, metrics, and investigation signals across service, gateway, runtime, database, and pipeline layers.</p>
+          </div>
+          <div id="overview-status-pill" class="overview-status quiet">Quiet</div>
+        </div>
+
+        <div class="overview-grid" id="overview-kpis">
+          <article class="overview-card"><span class="overview-label">Hosts</span><strong id="ov-hosts">--</strong></article>
+          <article class="overview-card"><span class="overview-label">Services</span><strong id="ov-services">--</strong></article>
+          <article class="overview-card"><span class="overview-label">Active instances</span><strong id="ov-active">--</strong></article>
+          <article class="overview-card danger"><span class="overview-label">Errors</span><strong id="ov-errors">--</strong></article>
+        </div>
+
+        <section class="overview-panel overview-layer-panel" aria-labelledby="overview-layer-title">
+          <div class="overview-panel-head">
+            <div>
+              <p class="overview-eyebrow">Monitoring layers</p>
+              <h2 id="overview-layer-title">Signals to investigate</h2>
+            </div>
+            <span class="overview-chip">live sources</span>
+          </div>
+          <div id="overview-layer-signals" class="overview-layer-grid">
+            <article class="overview-layer-card is-missing"><span>Host</span><strong>Collector needed</strong><p>Enable host metrics on edge hosts.</p></article>
+            <article class="overview-layer-card is-missing"><span>Container</span><strong>Loading</strong><p>Waiting for runtime status.</p></article>
+            <article class="overview-layer-card is-missing"><span>Gateway</span><strong>Loading</strong><p>Waiting for network metrics.</p></article>
+            <article class="overview-layer-card is-missing"><span>Workload DB</span><strong>Not configured</strong><p>Add database profiles for monitored apps.</p></article>
+            <article class="overview-layer-card is-missing"><span>Pipeline</span><strong>Loading</strong><p>Checking ingestion health.</p></article>
+            <article class="overview-layer-card is-missing"><span>Alerts</span><strong>Rules pending</strong><p>Custom alert rules are planned.</p></article>
+          </div>
+        </section>
+
+        <div class="overview-panels">
+          <section class="overview-panel">
+            <div class="overview-panel-head">
+              <div>
+                <p class="overview-eyebrow">Attention</p>
+                <h2>Services with errors</h2>
+              </div>
+              <span id="ov-error-count" class="overview-chip">0 services</span>
+            </div>
+            <div id="overview-error-services" class="overview-list">
+              <div class="overview-empty">No service errors in this window.</div>
+            </div>
+          </section>
+
+          <section class="overview-panel">
+            <div class="overview-panel-head">
+              <div>
+                <p class="overview-eyebrow">Traffic</p>
+                <h2>Most active services</h2>
+              </div>
+              <span class="overview-chip">last 24h</span>
+            </div>
+            <div id="overview-active-services" class="overview-list">
+              <div class="overview-empty">Waiting for service logs.</div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+
+      <!-- Platform Section -->
+      <section id='platform-section' class='platform-shell hidden'>
+        <div class='platform-header'>
+          <div>
+            <p class='overview-eyebrow'>Platform operations</p>
+            <h1>Central stack and edge health</h1>
+            <p class='platform-copy'>Use service identity first, then drill into logs when an operational signal needs investigation.</p>
+          </div>
+          <span class='platform-phase'>Phase 6 health</span>
+        </div>
+
+        <div id='platform-cockpit' class='platform-cockpit'>
+          <section class='platform-cockpit-main'>
+            <p class='overview-eyebrow'>Investigation path</p>
+            <h2 id='platform-cockpit-title'>Select a service to start investigation</h2>
+            <p id='platform-cockpit-copy'>Service groups appear here after the backend returns stable service identity data.</p>
+            <div class='platform-cockpit-meta'>
+              <span id='platform-cockpit-host'>Host: --</span>
+              <span id='platform-cockpit-project'>Stack: --</span>
+              <span id='platform-cockpit-errors'>Errors: --</span>
+            </div>
+          </section>
+          <div class='platform-cockpit-actions'>
+            <button id='platform-open-service-logs' class='platform-action platform-action-primary' data-platform-action='logs'>Open selected service logs</button>
+            <button id='platform-open-all-logs' class='platform-action' data-platform-action='all-logs'>Open all logs</button>
+            <button id='platform-open-gateway-logs' class='platform-action' data-platform-action='network-live'>Open network metrics</button>
+          </div>
+        </div>
+
+        <section id='platform-metrics-panel' class='platform-metrics-panel' aria-labelledby='platform-metrics-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Gateway metrics</p>
+              <h2 id='platform-metrics-title'>Network gateway metrics</h2>
+              <p class='platform-copy'>These metrics come from Nginx gateway logs. Host, container, and database metrics are separate slices.</p>
+            </div>
+            <div class='platform-health-tools'>
+              <span id='platform-metrics-window' class='platform-health-overall is-unknown'>last 24h</span>
+              <button id='platform-metrics-refresh' class='platform-action' type='button'>Refresh metrics</button>
+            </div>
+          </div>
+          <div id='platform-metrics-grid' class='platform-metrics-grid'>
+            <button id='platform-metric-request-rate' class='platform-metric-card' type='button' data-platform-metric='live'>
+              <span>Request rate</span><strong>--</strong><small>requests/min</small>
+            </button>
+            <button id='platform-metric-error-rate' class='platform-metric-card' type='button' data-platform-metric='errors'>
+              <span>Error rate</span><strong>--</strong><small>5xx share</small>
+            </button>
+            <button id='platform-metric-p95' class='platform-metric-card' type='button' data-platform-metric='slow'>
+              <span>P95 latency</span><strong>--</strong><small>seconds</small>
+            </button>
+            <button id='platform-metric-5xx' class='platform-metric-card' type='button' data-platform-metric='errors'>
+              <span>5xx count</span><strong>--</strong><small>server errors</small>
+            </button>
+          </div>
+          <div class='platform-metrics-body'>
+            <div>
+              <div class='platform-metrics-subhead'>Top slow or failing paths</div>
+              <div id='platform-metrics-paths' class='platform-metrics-paths'>
+                <div class='platform-runtime-row is-muted'>Waiting for gateway metrics.</div>
+              </div>
+            </div>
+            <div id='platform-metrics-empty' class='platform-metrics-empty hidden'>Network metrics are unavailable. Open Network after gateway logs arrive, or verify that Nginx logs are being ingested.</div>
+          </div>
+        </section>
+
+        <section id='platform-correlation-panel' class='platform-runtime-panel platform-correlation-panel' aria-labelledby='platform-correlation-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Gateway/app correlation</p>
+              <h2 id='platform-correlation-title'>Evidence window</h2>
+              <p class='platform-copy'>Start from 5xx, 404, or slow gateway symptoms, then compare app error logs in the same time window.</p>
+            </div>
+            <span id='platform-correlation-status' class='platform-health-overall is-unknown'>checking</span>
+          </div>
+          <div id='platform-correlation-summary' class='platform-correlation-summary'>
+            <article><span>Gateway 5xx</span><strong id='platform-correlation-5xx'>--</strong></article>
+            <article><span>Gateway 4xx</span><strong id='platform-correlation-4xx'>--</strong></article>
+            <article><span>App errors</span><strong id='platform-correlation-app-errors'>--</strong></article>
+          </div>
+          <div id='platform-correlation-signals' class='platform-correlation-signals'>
+            <div class='platform-runtime-row is-muted'>Waiting for gateway and app evidence.</div>
+          </div>
+        </section>
+
+<section id='platform-incident-panel' class='platform-runtime-panel platform-incident-panel' aria-labelledby='platform-incident-title'>
+  <div class='platform-health-head'>
+    <div>
+      <p class='overview-eyebrow'>Incident workflow</p>
+      <h2 id='platform-incident-title'>Incident evidence timeline</h2>
+      <p class='platform-copy'>One bounded service and one bounded time window: detect, correlate, investigate, then export a safe AI evidence bundle.</p>
+    </div>
+    <div class='platform-health-tools'>
+      <span id='platform-incident-status' class='platform-health-overall is-unknown'>select service</span>
+      <button id='platform-incident-copy' class='platform-action' type='button' disabled>Copy evidence bundle</button>
+      <button id='platform-incident-refresh' class='platform-action' type='button'>Refresh timeline</button>
+    </div>
+  </div>
+  <div id='platform-incident-scope' class='platform-incident-scope'>Select a service to build a bounded incident timeline.</div>
+  <div id='platform-incident-summary' class='platform-correlation-summary'>
+    <article><span>App errors</span><strong id='platform-incident-errors'>--</strong></article>
+    <article><span>Runtime signals</span><strong id='platform-incident-runtime'>--</strong></article>
+    <article><span>Alerts</span><strong id='platform-incident-alerts'>--</strong></article>
+    <article><span>Gateway 5xx</span><strong id='platform-incident-gateway'>--</strong></article>
+  </div>
+  <div id='platform-incident-timeline' class='platform-incident-timeline'>
+    <div class='platform-runtime-row is-muted'>Waiting for incident evidence.</div>
+  </div>
+  <div class='platform-incident-notes'>
+    <div id='platform-incident-boundary' class='platform-incident-note'>Scoped evidence bundle only. No raw database access.</div>
+    <div id='platform-incident-detects' class='platform-incident-note'>Detects: waiting for evidence bundle.</div>
+    <div id='platform-incident-limitations' class='platform-incident-note'>Does not fix: waiting for evidence bundle.</div>
+  </div>
+</section>
+
+        <section class='platform-health-panel' aria-labelledby='platform-health-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Runtime health</p>
+              <h2 id='platform-health-title'>Central stack checks</h2>
+            </div>
+            <div class='platform-health-tools'>
+              <span id='platform-health-overall' class='platform-health-overall is-unknown'>Checking</span>
+              <button id='platform-health-refresh' class='platform-action' type='button'>Refresh health</button>
+            </div>
+          </div>
+          <div id='platform-health-grid' class='platform-health-grid'>
+            <article id='platform-health-backend' class='platform-health-card is-unknown'>
+              <span class='platform-health-dot'></span>
+              <div><h3>Backend API</h3><p>Waiting for health check.</p></div>
+            </article>
+            <article id='platform-health-clickhouse' class='platform-health-card is-unknown'>
+              <span class='platform-health-dot'></span>
+              <div><h3>ClickHouse</h3><p>Waiting for health check.</p></div>
+            </article>
+            <article id='platform-health-postgres' class='platform-health-card is-unknown'>
+              <span class='platform-health-dot'></span>
+              <div><h3>PostgreSQL</h3><p>Waiting for health check.</p></div>
+            </article>
+            <article id='platform-health-redis' class='platform-health-card is-unknown'>
+              <span class='platform-health-dot'></span>
+              <div><h3>Redis</h3><p>Waiting for health check.</p></div>
+            </article>
+            <article id='platform-health-gateway' class='platform-health-card is-unknown'>
+              <span class='platform-health-dot'></span>
+              <div><h3>OTel Gateway</h3><p>Waiting for health check.</p></div>
+            </article>
+          </div>
+        </section>
+
+        <section class='platform-runtime-panel' aria-labelledby='platform-runtime-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Container runtime</p>
+              <h2 id='platform-runtime-title'>Compose containers</h2>
+            </div>
+            <button id='platform-runtime-refresh' class='platform-action' type='button'>Refresh runtime</button>
+          </div>
+          <div id='platform-runtime-grid' class='platform-runtime-grid'>
+            <article class='platform-runtime-stat'><span>Total</span><strong id='platform-runtime-total'>--</strong></article>
+            <article class='platform-runtime-stat'><span>Running</span><strong id='platform-runtime-running'>--</strong></article>
+            <article class='platform-runtime-stat'><span>Unhealthy</span><strong id='platform-runtime-unhealthy'>--</strong></article>
+            <article class='platform-runtime-stat runtime-diagnostic-stat'><span>Restarted</span><strong id='platform-runtime-restarted'>--</strong></article>
+            <article class='platform-runtime-stat runtime-diagnostic-stat'><span>OOM killed</span><strong id='platform-runtime-oom'>--</strong></article>
+            <article class='platform-runtime-stat runtime-diagnostic-stat'><span>Exited</span><strong id='platform-runtime-exited'>--</strong></article>
+          </div>
+          <div class='platform-runtime-subhead'>Container diagnostic signals</div>
+          <div id='platform-runtime-diagnostics' class='platform-runtime-list platform-runtime-diagnostics'>
+            <div class='platform-runtime-row is-muted'>Waiting for restart, OOM, and exit signals.</div>
+          </div>
+          <div class='platform-runtime-subhead'>Runtime inventory</div>
+          <div id='platform-runtime-list' class='platform-runtime-list'>
+            <div class='platform-runtime-row is-muted'>Waiting for runtime snapshot.</div>
+          </div>
+        </section>
+
+        <section id='platform-network-panel' class='platform-runtime-panel' aria-labelledby='platform-network-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Network workflow</p>
+              <h2 id='platform-network-title'>Open network investigations</h2>
+              <p class='platform-copy'>Jump straight into live edge traffic, 5xx responses, or top path analysis from Platform.</p>
+            </div>
+          </div>
+          <div class='platform-cockpit-actions'>
+            <button id='platform-network-open-live' class='platform-action platform-action-primary' data-platform-action='network-live'>Open live network</button>
+            <button id='platform-network-open-errors' class='platform-action' data-platform-action='network-errors'>Focus 5xx errors</button>
+            <button id='platform-network-open-paths' class='platform-action' data-platform-action='network-paths'>Focus top paths</button>
+          </div>
+        </section>
+
+        <section id='platform-database-panel' class='platform-runtime-panel' aria-labelledby='platform-database-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Database workflow</p>
+              <h2 id='platform-database-title'>Inspect database health</h2>
+              <p class='platform-copy'>Jump to ClickHouse, PostgreSQL, or Redis health signals before using admin tooling.</p>
+            </div>
+          </div>
+          <div class='platform-cockpit-actions'>
+            <button id='platform-db-clickhouse' class='platform-action platform-action-primary' data-platform-action='db-clickhouse'>Focus ClickHouse</button>
+            <button id='platform-db-postgres' class='platform-action' data-platform-action='db-postgres'>Focus PostgreSQL</button>
+            <button id='platform-db-redis' class='platform-action' data-platform-action='db-redis'>Focus Redis</button>
+          </div>
+        </section>
+
+        <section id='platform-workload-db-panel' class='platform-runtime-panel platform-workload-db-panel' aria-labelledby='platform-workload-db-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Workload databases</p>
+              <h2 id='platform-workload-db-title'>Application database monitoring</h2>
+              <p class='platform-copy'>Separate monitored app databases from this platform's own ClickHouse, PostgreSQL, and Redis dependencies.</p>
+            </div>
+            <div class='platform-health-tools'>
+              <span id='platform-workload-db-status' class='platform-health-overall is-unknown'>checking</span>
+              <button id='platform-workload-db-refresh' class='platform-action' type='button'>Refresh DBs</button>
+            </div>
+          </div>
+          <div id='platform-workload-db-list' class='platform-workload-db-list'>
+            <div class='platform-runtime-row is-muted'>Waiting for workload database profiles.</div>
+          </div>
+          <div id='platform-workload-db-supported' class='platform-workload-db-supported'></div>
+        </section>
+
+        <section id='platform-uptime-panel' class='platform-runtime-panel' aria-labelledby='platform-uptime-title'>
+          <div class='platform-health-head'>
+            <div>
+              <p class='overview-eyebrow'>Surface uptime</p>
+              <h2 id='platform-uptime-title'>Core surfaces</h2>
+            </div>
+            <div class='platform-health-tools'>
+              <span id='platform-uptime-overall' class='platform-health-overall is-unknown'>Checking</span>
+              <button id='platform-uptime-refresh' class='platform-action' type='button'>Refresh uptime</button>
+            </div>
+          </div>
+          <div id='platform-uptime-grid' class='platform-uptime-grid'>
+            <article id='platform-uptime-dashboard' class='platform-uptime-card is-unknown'><span class='platform-health-dot'></span><div><h3>Dashboard UI</h3><p>Waiting for uptime check.</p></div></article>
+            <article id='platform-uptime-backend' class='platform-uptime-card is-unknown'><span class='platform-health-dot'></span><div><h3>Backend API</h3><p>Waiting for uptime check.</p></div></article>
+            <article id='platform-uptime-clickhouse-ui' class='platform-uptime-card is-unknown'><span class='platform-health-dot'></span><div><h3>ClickHouse UI</h3><p>Waiting for uptime check.</p></div></article>
+          </div>
+        </section>
+
+        <div class='platform-grid'>
+          <article class='platform-module platform-module-primary'>
+            <div class='platform-module-head'><span class='platform-module-icon'>SVC</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Services</h2>
+            <p>Logical workloads grouped by host, stack, and stable service identity.</p>
+            <button class='platform-action' data-platform-action='logs'>Open service logs</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>INF</span><span class='platform-module-state planned'>Next</span></div>
+            <h2>Infrastructure</h2>
+            <p>Host and container resource views planned for the monitoring phase.</p>
+            <button class='platform-action' data-platform-action='unavailable' disabled>Metrics collector needed</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>GW</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Network</h2>
+            <p>Traffic, client IPs, paths, status codes, and response times across the gateway edge.</p>
+            <button class='platform-action' data-platform-action='network-live'>Open network metrics</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>DB</span><span class='platform-module-state planned'>Planned</span></div>
+            <h2>Databases</h2>
+            <p>ClickHouse, PostgreSQL, and Redis health checks will surface here.</p>
+            <button class='platform-action' data-platform-action='admin'>Open admin tools</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>UP</span><span class='platform-module-state planned'>Planned</span></div>
+            <h2>Uptime</h2>
+            <p>Endpoint checks and incident history are reserved for Phase 6.</p>
+            <button class='platform-action' data-platform-action='unavailable' disabled>Incident history pending</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>ALR</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Alerts</h2>
+            <p>Critical notifications remain available from the bell and admin views.</p>
+            <button class='platform-action' data-platform-action='admin'>Open alert controls</button>
+          </article>
+          <article class='platform-module'>
+            <div class='platform-module-head'><span class='platform-module-icon'>SET</span><span class='platform-module-state live'>Live</span></div>
+            <h2>Settings</h2>
+            <p>Retention, backup timing, and activity thresholds stay admin-owned.</p>
+            <button class='platform-action' data-platform-action='admin'>Open settings</button>
+          </article>
+        </div>
+      </section>
+      <!-- Admin Section (Hidden by default) -->
+      <section id="admin-section" class="hidden"
+        style="flex:1; overflow-y:auto; padding:20px; background:var(--bg-base);">
+        <div
+          style="display:grid; grid-template-columns:1fr 1fr 380px; gap:16px; align-items:stretch; min-height:calc(100vh - var(--header-h) - 80px);">
+
+          <!--  User Management  -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:16px;">Users</span>
+                <span class="admin-card-title">User Management</span>
+              </div>
+              <span id="user-count-badge" class="admin-badge"></span>
+            </div>
+            <div style="padding:12px 14px; border-bottom:1px solid var(--border);">
+              <input type="search" id="user-search" placeholder="Search by name or email..."
+                style="width:100%; font-size:12px;" />
+            </div>
+            <div id="user-list" class="admin-scroll-list">
+              <div class="admin-empty">Loading users...</div>
+            </div>
+          </div>
+
+          <!--  Container Ownership  -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:16px;">Containers</span>
+                <span class="admin-card-title">Container Ownership</span>
+              </div>
+            </div>
+            <div
+              style="padding:12px 14px; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:8px;">
+              <!-- Step 1: pick user -->
+              <div>
+                <label
+                  style="font-size:10px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:4px;">1
+                  - Select user</label>
+                <select id="assign-user-select" style="width:100%; font-size:12px;">
+                  <option value="">-- pick a user --</option>
+                </select>
+              </div>
+              <!-- Step 2: search containers -->
+              <div>
+                <label
+                  style="font-size:10px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:4px;">2
+                  - Add containers</label>
+                <div style="position:relative;">
+                  <input type="search" id="container-assign-search" placeholder=" Type container name..."
+                    style="width:100%; font-size:13px; height:36px; padding:0 10px;" autocomplete="off" disabled />
+                  <div id="assign-container-results" class="hidden"
+                    style="position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); z-index:20; max-height:200px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.15); padding:4px;">
+                  </div>
+                </div>
+              </div>
+              <div id="assign-selected-tags" class="export-tags" style="min-height:0;"></div>
+              <button id="btn-assign-container" class="btn-primary"
+                style="width:20%; font-size:13px; padding:8px; font-weight:600;" disabled>Assign</button>
+            </div>
+            <div id="ownership-list" class="admin-scroll-list">
+              <div class="admin-empty">Select a user to view assignments</div>
+            </div>
+          </div>
+
+<!--  System Maintenance  -->
+<div style="display:flex; flex-direction:column; gap:16px;">
+  <!-- Alert rules card -->
+  <div class="admin-card" id="admin-alert-card">
+    <div class="admin-card-header">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:16px;">Alerts</span>
+        <span class="admin-card-title">Custom alert rules</span>
+      </div>
+      <span id="alert-rule-count-badge" class="admin-badge"></span>
+    </div>
+    <div class="admin-alert-form" id="alert-rule-create-form">
+      <div class="admin-alert-grid">
+        <label class="admin-alert-field">
+          <span>Name</span>
+          <input id="alert-rule-name" class="admin-alert-input" type="text" placeholder="High 5xx burst" />
+        </label>
+        <label class="admin-alert-field">
+          <span>Source</span>
+          <select id="alert-rule-source" class="admin-alert-input">
+            <option value="application">Application</option>
+            <option value="gateway">Gateway</option>
+            <option value="database">Database</option>
+            <option value="host">Host</option>
+          </select>
+        </label>
+        <label class="admin-alert-field admin-alert-field-full">
+          <span>Trigger condition</span>
+          <textarea id="alert-rule-condition" class="admin-alert-textarea" placeholder="5xx rate above 5 percent for 5 minutes"></textarea>
+        </label>
+        <label class="admin-alert-field admin-alert-field-full">
+          <span>Recipients</span>
+          <input id="alert-rule-recipients" class="admin-alert-input" type="text" placeholder="ops@example.com, dev@example.com" />
+        </label>
+        <label class="admin-alert-field">
+          <span>Severity</span>
+          <select id="alert-rule-severity" class="admin-alert-input">
+            <option value="warning">Warning</option>
+            <option value="critical">Critical</option>
+            <option value="info">Info</option>
+          </select>
+        </label>
+        <label class="admin-alert-field">
+          <span>Cooldown sec</span>
+          <input id="alert-rule-cooldown" class="admin-alert-input" type="number" min="0" step="30" value="300" />
+        </label>
+      </div>
+      <div class="admin-alert-actions">
+        <label class="admin-alert-toggle"><input id="alert-rule-enabled" type="checkbox" checked /> Enabled</label>
+        <button id="btn-alert-rule-create" class="btn-primary" style="padding:8px 12px; font-size:12px; font-weight:600;">Create rule</button>
+      </div>
+      <div id="alert-rule-feedback" class="admin-inline-status hidden"></div>
+    </div>
+    <div class="admin-section-divider">Rules</div>
+    <div id="alert-rules-list" class="admin-scroll-list admin-alert-rules-list">
+      <div class="admin-empty">Loading alert rules...</div>
+    </div>
+    <div class="admin-section-divider">Recent alert tests</div>
+    <div id="alert-history-list" class="admin-alert-history">
+      <div class="admin-empty">No custom alerts yet</div>
+    </div>
+  </div>
+
+  <!-- Backup card -->
+            <div class="admin-card">
+              <div class="admin-card-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:16px;"></span>
+                  <span class="admin-card-title">Database Backup</span>
+                </div>
+              </div>
+              <div style="padding:14px;">
+                <p style="font-size:11px; color:var(--text-muted); margin-bottom:12px; line-height:1.5;">
+                  Backs up PostgreSQL + ClickHouse. Older logs are cleared after backup completes.
+                </p>
+                <button id="btn-trigger-backup" class="btn-primary"
+                  style="width:35%; padding:8px; font-size:12px; font-weight:600;">Start Backup
+                </button>
+                <div id="backup-status-banner"
+                  style="margin-top:10px; padding:8px 10px; border-radius:4px; font-size:11px; display:none; border:1px solid var(--border); background:var(--bg-elevated);">
+                </div>
+              </div>
+              <!-- Backup history -->
+              <div style="border-top:1px solid var(--border);">
+                <div style="padding:8px 14px; display:flex; align-items:center; justify-content:space-between;">
+                  <span
+                    style="font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em;">History</span>
+                  <button id="btn-backup-history-refresh" class="btn-ghost"
+                    style="font-size:10px; padding:2px 6px;">Refresh</button>
+                </div>
+                <div style="overflow-x:auto; max-height:200px; overflow-y:auto;">
+                  <table style="width:100%; border-collapse:collapse; font-size:10px; table-layout:fixed;">
+                    <thead style="position:sticky; top:0; background:var(--bg-elevated); z-index:1;">
+                      <tr>
+                        <th
+                          style="padding:4px 6px; text-align:right; color:var(--text-muted); font-weight:600; width:30px;">
+                          #</th>
+                        <th
+                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:140px;">
+                          Started</th>
+                        <th
+                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:140px;">
+                          Finished</th>
+                        <th style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600;">DBs</th>
+                        <th
+                          style="padding:4px 6px; text-align:left; color:var(--text-muted); font-weight:600; width:110px;">
+                          Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="backup-history-body">
+                      <tr>
+                        <td colspan="5" style="padding:12px; text-align:center; color:var(--text-muted);">Loading...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Danger zone card -->
+            <div class="admin-card" style="border-color:rgba(225,29,72,0.25);">
+              <div class="admin-card-header" style="background:rgba(225,29,72,0.05);">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:16px;">Warning</span>
+                  <span class="admin-card-title" style="color:var(--error);">Danger Zone</span>
+                </div>
+              </div>
+              <div style="padding:14px; display:flex; flex-direction:column; gap:8px;">
+                <p style="font-size:11px; color:var(--text-muted); line-height:1.5;">
+                  Permanently delete log records from ClickHouse. Cannot be undone.
+                </p>
+                <button id="btn-clear-db-admin" class="btn-danger"
+                  style="width:100%; padding:8px; font-size:12px; font-weight:600;">Clear Database
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Analytics Section (Hidden by default) -->
+      <section id="analytics-section" class="hidden" style="flex:1; overflow-y:auto; padding:20px;">
+        <!-- Controls -->
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+          <span style="font-size:13px; font-weight:600; color:var(--text-dim);">Container Analytics</span>
+          <select id="analytics-hours-select" style="font-size:12px; padding:2px 6px;">
+            <option value="1">Last 1 h</option>
+            <option value="6">Last 6 h</option>
+            <option value="24" selected>Last 24 h</option>
+            <option value="168">Last 7 d</option>
+          </select>
+          <button id="btn-analytics-refresh" class="btn-secondary" style="font-size:12px; padding:2px 8px;">Refresh</button>
+        </div>
+        <!-- Row 1: volume + severity -->
+        <div style="display:grid; grid-template-columns:2fr 1fr; gap:20px; margin-bottom:20px;">
+          <div
+            style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
+            <h3
+              style="font-size:13px; margin-bottom:16px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.05em;">
+              Log Volume Over Time</h3>
+            <div style="height:260px;"><canvas id="chart-volume"></canvas></div>
+          </div>
+          <div
+            style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
+            <h3
+              style="font-size:13px; margin-bottom:16px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.05em;">
+              Severity Distribution</h3>
+            <div style="height:260px;"><canvas id="chart-severity"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Analytics Detail Panel -->
+        <div id="analytics-detail" class="hidden" style="margin-top:20px;">
+          <div
+            style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 16px;">
+            <span id="analytics-detail-title" style="font-size:13px; font-weight:600; color:var(--text);"></span>
+            <button id="btn-analytics-detail-close"
+              style="background:none; border:none; cursor:pointer; color:var(--text-muted); font-size:18px; padding:0 4px;">&times;</button>
+          </div>
+          <button id="btn-view-full-logs" class="btn-primary"
+            style="width:10%; margin-top:12px; padding:10px; font-size:13px; font-weight:600;">View Full Logs -></button>
+          <div
+            style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-top:12px;">
+            <h4 style="font-size:12px; color:var(--text-muted); margin-bottom:12px; text-transform:uppercase;">Sample
+              Logs</h4>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border);">
+                    <th style="text-align:left; padding:8px; color:var(--text-dim);">Timestamp</th>
+                    <th style="text-align:left; padding:8px; color:var(--text-dim);">Service</th>
+                    <th style="text-align:left; padding:8px; color:var(--text-dim);">Container</th>
+                    <th style="text-align:left; padding:8px; color:var(--text-dim);">Level</th>
+                    <th style="text-align:left; padding:8px; color:var(--text-dim);">Message</th>
+                  </tr>
+                </thead>
+                <tbody id="analytics-detail-logs"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Logs View -->
+      <div id="logs-view-wrapper" class="hidden" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+        <!-- Filter bar -->
+        <section id="filter-bar">
+          <div class="filter-group">
+            <label>Search</label>
+            <input id="search-input" type="search" placeholder="Search messages..." />
+          </div>
+          <div class="filter-group">
+            <label>Level</label>
+            <select id="level-select">
+              <option value="">All levels</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Sort</label>
+            <select id="sort-select">
+              <option value="DESC">Newest first</option>
+              <option value="ASC">Oldest first</option>
+            </select>
+          </div>
+          <div class="filter-group custom-dt-group">
+            <label>From</label>
+            <div class="custom-datetime">
+              <input id="range-from-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="range-from-hour" class="time-select"></select>
+                </div>
+                <div class="time-col">
+                  <select id="range-from-minute" class="time-select"></select>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="filter-group custom-dt-group">
+            <label>To</label>
+            <div class="custom-datetime">
+              <input id="range-to-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col">
+                  <select id="range-to-hour" class="time-select"></select>
+                </div>
+                <div class="time-col">
+                  <select id="range-to-minute" class="time-select"></select>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button id="btn-apply" class="btn-primary">Apply</button>
+          <button id="btn-reset" class="btn-ghost">Reset</button>
+          <button id="btn-export" class="btn-secondary"> Export</button>
+        </section>
+
+        <!-- Table -->
+        <section id="table-section">
+          <div id="table-status">
+            <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+          </div>
+
+          <div class="table-wrapper">
+            <table id="log-table">
+              <thead>
+                <tr>
+                  <th class="col-ts">Timestamp</th>
+                  <th class="col-cid">Container</th>
+                  <th class="col-lvl">Level</th>
+                  <th>Message</th>
+                  <th class="col-ctx">Traces</th>
+                </tr>
+              </thead>
+              <tbody id="log-body">
+                <tr>
+                  <td colspan="5" style="text-align:center; padding:40px; color:var(--text-muted);">Loading logs...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="pagination">
+            <button id="btn-prev" class="btn-ghost" disabled><- Prev</button>
+            <span id="page-info">Page 1</span>
+            <button id="btn-next" class="btn-ghost">Next -></button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Network View (Hidden by default) -->
+      <div id="nginx-view-wrapper" class="hidden">
+        <!-- Network Analytics -->
+        <section style="padding:12px 16px; border-bottom:1px solid var(--border); flex-shrink:0;">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+            <span style="font-size:13px; font-weight:600; color:var(--text-dim);">Network Analytics</span>
+            <select id="nginx-hours-select" style="font-size:12px; padding:2px 6px;">
+              <option value="0.0833">Last 5 min</option>
+              <option value="0.5">Last 30 min</option>
+              <option value="1">Last 1 h</option>
+              <option value="6">Last 6 h</option>
+              <option value="24" selected>Last 24 h</option>
+              <option value="168">Last 7 d</option>
+            </select>
+            <button id="btn-nginx-analytics-refresh" class="btn-secondary"
+              style="font-size:12px; padding:2px 8px;">Refresh</button>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+            <div class="metric-card"><span class="metric-value" id="nx-total">--</span><span class="metric-label">Total
+                Requests</span></div>
+            <div class="metric-card error"><span class="metric-value" id="nx-error-rate">--</span><span
+                class="metric-label">Error Rate</span></div>
+            <div class="metric-card"><span class="metric-value" id="nx-bytes">--</span><span class="metric-label">Total
+                Bytes</span></div>
+          </div>
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px; margin-bottom:12px;">
+            <div
+              style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px;">
+              <h3 style="font-size:11px; margin-bottom:10px; color:var(--text-muted); text-transform:uppercase;">Traffic
+                Volume</h3>
+              <div style="height:180px;"><canvas id="nginx-chart-traffic"></canvas></div>
+            </div>
+            <div
+              style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px;">
+              <h3 style="font-size:11px; margin-bottom:10px; color:var(--text-muted); text-transform:uppercase;">Top
+                Client IPs</h3>
+              <div id="nginx-top-ips-list" style="font-size:12px; max-height:180px; overflow-y:auto;"></div>
+            </div>
+          </div>
+          <div
+            style="background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px;">
+            <h3 style="font-size:11px; margin-bottom:10px; color:var(--text-muted); text-transform:uppercase;">Top Paths
+            </h3>
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);">
+                  <th style="text-align:left; padding:4px;">Website</th>
+                  <th style="text-align:left; padding:4px;">Path</th>
+                  <th style="text-align:right; padding:4px;">Reqs</th>
+                  <th style="text-align:right; padding:4px;">Errors</th>
+                </tr>
+              </thead>
+              <tbody id="nginx-top-paths-body"></tbody>
+            </table>
+          </div>
+        </section>
+        <!-- Network Logs Filter & Table -->
+        <section style='padding:10px 16px 0; background:var(--bg-surface);'>
+          <span style='font-size:13px; font-weight:600; color:var(--text-dim);'>Network log explorer</span>
+        </section>
+        <section id="nginx-filter-bar"
+          style="padding:10px 16px; background:var(--bg-surface); border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;">
+          <div class="filter-group"><label>Search All</label><input id="nginx-search-input" type="search"
+              placeholder="IP, method, path, status..." /></div>
+          <div class="filter-group"><label>Status</label><select id="nginx-status-select">
+              <option value="">All</option>
+              <option value="200">200 OK</option>
+              <option value="404">404 Not Found</option>
+              <option value="500">500 Error</option>
+            </select></div>
+          <div class="filter-group"><label>Method</label><select id="nginx-method-select">
+              <option value="">All</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+            </select></div>
+          <div class="filter-group"><label>Sort</label><select id="nginx-sort-select">
+              <option value="desc">Newest first</option>
+              <option value="asc">Oldest first</option>
+            </select></div>
+          <div class="filter-group custom-dt-group">
+            <label>From</label>
+            <div class="custom-datetime">
+              <input id="nginx-range-from-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col"><select id="nginx-range-from-hour" class="time-select"></select></div>
+                <div class="time-col"><select id="nginx-range-from-minute" class="time-select"></select></div>
+              </div>
+            </div>
+          </div>
+          <div class="filter-group custom-dt-group">
+            <label>To</label>
+            <div class="custom-datetime">
+              <input id="nginx-range-to-date" type="date" />
+              <span class="dt-divider"></span>
+              <div class="time-select-group">
+                <div class="time-col"><select id="nginx-range-to-hour" class="time-select"></select></div>
+                <div class="time-col"><select id="nginx-range-to-minute" class="time-select"></select></div>
+              </div>
+            </div>
+          </div>
+          <button id="btn-nginx-apply" class="btn-primary">Apply</button>
+          <button id="btn-nginx-reset" class="btn-ghost">Reset</button>
+          <button id="btn-nginx-refresh" class="btn-secondary">Refresh</button>
+        </section>
+        <section style="padding:10px 16px; display:flex; flex-direction:column;">
+          <div id="nginx-table-status" style="font-size:11px; margin-bottom:6px; color:var(--text-muted);"></div>
+          <div class="table-wrapper">
+            <table id="nginx-log-table">
+              <thead>
+                <tr>
+                  <th style="width:110px;">Client IP</th>
+                  <th style="width:140px;">Timestamp</th>
+                  <th style="width:56px;">Method</th>
+                  <th style="width:500px;">Website</th>
+                  <th>Path</th>
+                  <th style="width:56px;">Status</th>
+                  <th style="width:62px;">Bytes</th>
+                  <th style="width:62px;">Time</th>
+                </tr>
+              </thead>
+              <tbody id="nginx-log-body"></tbody>
+            </table>
+          </div>
+          <div id="nginx-pagination"
+            style="display:flex; align-items:center; justify-content:center; gap:12px; padding:10px;">
+            <button id="btn-nginx-prev" class="btn-ghost" disabled><- Prev</button>
+            <span id="nginx-page-info" style="font-size:12px;">Page 1</span>
+            <button id="btn-nginx-next" class="btn-ghost">Next -></button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Patterns View (Hidden by default) -->
+      <section id="patterns-section" class="hidden" style="flex:1; overflow-y:auto; padding:20px;">
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:16px;">
+          <div class="filter-group">
+            <label>Window</label>
+            <select id="patterns-minutes">
+              <option value="60" selected>Last 1 hour</option>
+              <option value="1440">Last 24 hours</option>
+            </select>
+          </div>
+          <button id="btn-patterns-load" class="btn-primary">Load Patterns</button>
+          <span id="patterns-status" style="font-size:12px; color:var(--text-muted);"></span>
+        </div>
+        <div class="table-wrapper">
+          <table id="patterns-table">
+            <thead>
+              <tr>
+                <th style="width:60px; text-align:center;">Count</th>
+                <th style="width:80px;">Severity</th>
+                <th>Pattern</th>
+                <th style="width:140px;">First Seen</th>
+                <th style="width:140px;">Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="patterns-body">
+              <tr>
+                <td colspan="5" style="text-align:center; padding:40px; color:var(--text-muted);">Click "Load Patterns"
+                  to analyze.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Docs FAB -->
+  <div class="docs-fab-wrapper" id="docs-fab-wrapper">
+    <span class="docs-fab-tooltip">User Manual</span>
+    <a id="docs-link" href="#" target="_blank" class="docs-fab" aria-label="User Manual">Docs</a>
+    <button id="btn-docs-close" class="docs-fab-close" title="Close">Close</button>
+  </div>
+
+  <!-- Clear DB Modal -->
+  <div id="modal-overlay" class="hidden">
+    <div class="modal">
+      <h2 style="font-size:16px; margin-bottom:12px;">Warning Clear Database</h2>
+      <p style="font-size:13px; margin-bottom:16px; color:var(--text-dim);">Permanently delete logs from ClickHouse.
+        Choose a range:</p>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:20px;">
+        <label style="font-size:13px; cursor:pointer;"><input type="radio" name="clear-range" value="7" /> Last 7
+          days</label>
+        <label style="font-size:13px; cursor:pointer;"><input type="radio" name="clear-range" value="30" /> Last 30
+          days</label>
+        <label style="font-size:13px; cursor:pointer;"><input type="radio" name="clear-range" value="90" checked /> Last
+          90 days</label>
+        <label style="font-size:13px; cursor:pointer;"><input type="radio" name="clear-range" value="all" /> All
+          data</label>
+      </div>
+      <pre id="modal-query-preview"
+        style="background:var(--bg-elevated); border:1px solid var(--border); border-radius:4px; padding:8px 10px; font-size:11px; font-family:var(--mono); color:var(--text-muted); white-space:pre-wrap; word-break:break-all; margin-bottom:12px;"></pre>
+      <div id="modal-error" class="hidden" style="color:var(--error); font-size:12px; margin-bottom:12px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button id="btn-modal-cancel" class="btn-ghost">Cancel</button>
+        <button id="btn-modal-confirm" class="btn-danger">Confirm Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Panel -->
+  <div id="export-overlay" class="hidden">
+    <div class="export-modal">
+      <div class="export-modal-header">
+        <div class="export-modal-title">
+          <span class="export-modal-icon"></span>
+          Export Logs
+          <span class="export-modal-badge">JSV</span>
+        </div>
+        <button id="btn-export-close" class="modal-close-btn" aria-label="Close">Close</button>
+      </div>
+      <div class="export-modal-body">
+        <div class="export-section">
+          <div class="export-section-label">Stack / Container</div>
+          <div style="position:relative;">
+            <input type="search" id="export-stack-search" placeholder="Search stacks or containers..." autocomplete="off" style="width:100%;" />
+            <div id="export-stack-results" class="hidden export-search-dropdown"></div>
+          </div>
+          <div id="export-selected-tags" class="export-tags"></div>
+        </div>
+        <div class="export-divider"></div>
+        <div class="export-section">
+          <div class="export-section-label">Time Range</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <div>
+              <label class="export-field-label">From</label>
+              <input id="export-from-dt" type="datetime-local" class="export-dt-input" />
+            </div>
+            <div>
+              <label class="export-field-label">To</label>
+              <input id="export-to-dt" type="datetime-local" class="export-dt-input" />
+            </div>
+          </div>
+          <label class="export-all-time-label">
+            <input type="checkbox" id="export-all-time" /> Export all time
+          </label>
+        </div>
+        <div id="export-status" class="hidden export-status-msg"></div>
+        <div class="export-modal-footer">
+          <button id="btn-export-cancel" class="btn-ghost">Cancel</button>
+          <button id="btn-export-confirm" class="btn-primary">Download JSV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="src/api.js"></script>
+  <script src="src/overview.js"></script>
+  <script src="src/logs.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>

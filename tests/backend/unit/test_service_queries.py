@@ -1,4 +1,4 @@
-from backend.service_queries import build_services_summary_query
+from apps.api.service_queries import build_services_summary_query
 
 
 def test_services_summary_query_groups_by_stable_service_key():

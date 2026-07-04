@@ -4,27 +4,65 @@ This document explains how the repository is organized during the transition fro
 
 ## Current Rule
 
-Do not move working runtime files until the migration is tested.
+The current root layout is not the desired production layout.
 
-The existing stack is stable, so this repository currently keeps the old working layout and adds the new central/edge platform layout beside it.
+However, runtime paths are referenced by compose, Dockerfiles, tests, docs, and shell scripts. Move them in staged batches, not as one broad rename.
+
+Root `docker-compose.yml` remains the compatibility entrypoint until every migrated path passes compose validation and smoke tests.
+
+## Target Production Layout
+
+```text
+apps/
+  api/                 # FastAPI backend package
+  web/                 # Dashboard frontend app
+infra/
+  compose/             # central compose files and overrides
+  clickhouse/          # ClickHouse schema/config
+  otel/                # OTel collector configs
+  vector/              # Vector configs
+  nginx/               # proxy templates
+deploy/                # release, promotion, backup automation
+tools/                 # CI/dev/load-test helpers
+archive/               # reviewed legacy/reference material
+docs/                  # official project documentation
+tests/                 # automated test suites
+edge/                  # monitored-host install surface
+central/               # central install documentation while root compose remains active
+```
+
+## Migration Order
+
+1. Add target directories and document the layout.
+2. Move documentation-only and tooling-only material first.
+3. Move `apps/web/` to `apps/web/` when frontend migration starts.
+4. Move `apps/api/` to `apps/api/` when backend modularization starts.
+5. Move telemetry config into `infra/` after compose config and smoke tests are green.
+6. Keep root compatibility wrappers until final install docs and CI use the new paths.
 
 ## Top-Level Folders
 
 | Path | Status | Purpose |
 |---|---|---|
-| `backend/` | active | FastAPI backend, auth, RBAC, queries, notifications. |
-| `dashboard/` | active | Static SPA dashboard served by Nginx. |
-| `clickhouse/` | active | ClickHouse schema/config for log storage. |
-| `otel/` | active | Central OTel Gateway config. |
-| `backup/` | active | ClickHouse backup service. |
+| `apps/api/` | active | FastAPI backend, auth, RBAC, queries, notifications. |
+| `apps/web/` | active | Static SPA dashboard served by Nginx. |
+| `infra/clickhouse/` | active | ClickHouse schema/config for log storage. |
+| `infra/otel/` | active | Central OTel Gateway config. |
+| `apps/backup/` | active | ClickHouse backup service. |
+| `infra/vector/` | active | Central Vector collector config. |
 | `docker-compose.yml` | active | Current working central stack. |
+| `apps/` | target | Future home for first-party app source. |
+| `infra/` | target | Future home for compose and observability runtime config. |
+| `deploy/` | target | Future home for release/promotion/backup automation. |
+| `tools/` | target | Future home for CI, dev, load-test, and reporting helpers. |
+| `archive/` | target | Future home for reviewed legacy/reference material. |
 | `central/` | target | Future home of central stack packaging/docs. |
 | `edge/` | new | Edge agent stack for monitored hosts. |
 | `tests/` | new | Automated unit/API/UI tests. |
 | `docs/` | new | Project architecture, ADRs, deployment, testing, roadmap. |
-| `Chores/` | legacy/reference | Internship-era configs and experiments. Keep as reference until migrated. |
-| `grafana/`, `prometheus/`, `alertmanager/`, `traefik/`, `k6/` | legacy/reference | Prior monitoring/deployment experiments. Review before reusing. |
-| `docs-site/` | optional | Documentation site experiment. Not required for MVP. |
+| `archive/internship/Chores/` | legacy/reference | Internship-era configs and experiments. Keep as reference until migrated. |
+| `archive/legacy/grafana/`, `archive/legacy/prometheus/`, `archive/legacy/alertmanager/`, `archive/legacy/traefik/`, `archive/legacy/k6/` | legacy/reference | Prior monitoring/deployment experiments. Review before reusing. |
+| `archive/legacy/docs-site/` | optional | Documentation site experiment. Not required for MVP. |
 
 ## Active Runtime Files
 
@@ -33,14 +71,14 @@ These files are part of the current working stack:
 ```text
 docker-compose.yml
 .env.example
-backend/main.py
-dashboard/index.html
-dashboard/app.js
-dashboard/style.css
-dashboard/nginx.conf.template
-clickhouse/init.sql
-otel/gateway-config.yaml
-backup/
+apps/api/main.py
+apps/web/index.html
+apps/web/app.js
+apps/web/style.css
+apps/web/nginx.conf.template
+infra/clickhouse/init.sql
+infra/otel/gateway-config.yaml
+apps/backup/
 ```
 
 Treat these carefully. Changes here can affect the live/demo stack.
@@ -83,17 +121,28 @@ docs/architecture/
 docs/workflows/
 ```
 
-## Migration Direction
+## Legacy Migration Direction
 
-The repository should move gradually toward:
+The old direction was:
 
 ```text
 central/      # central platform install surface
 edge/         # monitored host agent install surface
-backend/      # backend source
-dashboard/    # frontend source
+apps/api/      # backend source
+apps/web/    # frontend source
 tests/        # automated tests
 docs/         # official project docs
+```
+
+The updated production direction is:
+
+```text
+apps/api/          # backend source
+apps/web/          # frontend source
+infra/             # compose and telemetry config
+deploy/            # release automation
+tools/             # dev and CI tooling
+archive/           # reviewed reference material
 ```
 
 Do not move the root compose file until:
@@ -108,14 +157,24 @@ Do not move the root compose file until:
 
 Review later, not now:
 
-- `Chores/`
-- `grafana/`
-- `prometheus/`
-- `alertmanager/`
-- `traefik/`
-- `k6/`
-- `docs-site/`
+- `archive/internship/Chores/`
+- `archive/legacy/grafana/`
+- `archive/legacy/prometheus/`
+- `archive/legacy/alertmanager/`
+- `archive/legacy/traefik/`
+- `archive/legacy/k6/`
+- `archive/legacy/docs-site/`
 - old root markdown notes
+
+Already moved out of root:
+
+- `docs/notes/docusuarus-base.md`
+- `archive/legacy/grafana/grafana-link-dashboard.json`
+- `archive/reference/FileBeat.zip`
+- `docs/notes/recommendation.md`
+- `docs/notes/examine.md`
+- `docs/deployment/restore-backup.md`
+- `archive/local/` for ignored machine-local notes and artifacts
 
 These may contain useful internship evidence, so do not delete them without review.
 

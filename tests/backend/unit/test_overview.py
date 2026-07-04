@@ -1,4 +1,4 @@
-from backend.overview import build_overview_summary
+from apps.api.overview import build_overview_summary
 
 
 def test_build_overview_summary_rolls_up_service_rows():

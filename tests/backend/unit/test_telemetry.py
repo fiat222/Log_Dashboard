@@ -1,4 +1,4 @@
-from backend.telemetry import should_enable_otel
+from apps.api.telemetry import should_enable_otel
 
 
 def test_should_disable_otel_when_standard_env_is_true():

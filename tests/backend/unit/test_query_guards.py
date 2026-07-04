@@ -1,4 +1,4 @@
-from backend.query_guards import apply_container_scope, ensure_select_query
+from apps.api.query_guards import apply_container_scope, ensure_select_query
 
 
 def test_ensure_select_query_accepts_select_only():

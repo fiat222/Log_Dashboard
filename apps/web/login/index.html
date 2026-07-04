@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Dashboard - Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand-blue: #004B93;
+      --brand-blue-mid: #1a5fa8;
+      --navy: #12275c;
+      --sans: 'Inter', sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+      --text: #0d1117;
+      --text-muted: #6b7280;
+      --error: #c0392b;
+    }
+
+    html, body { height: 100%; font-family: var(--sans); }
+
+    body {
+      background: #dde4ef;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* Dot grid */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(circle, rgba(0,75,147,0.15) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Animated blobs */
+    .blob {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(70px);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .blob-1 {
+      width: 500px; height: 500px;
+      background: rgba(0,75,147,0.22);
+      top: -100px; left: -120px;
+      animation: blobMove1 14s ease-in-out infinite alternate;
+    }
+    .blob-2 {
+      width: 420px; height: 420px;
+      background: rgba(14,100,190,0.18);
+      bottom: -80px; right: -100px;
+      animation: blobMove2 17s ease-in-out infinite alternate;
+    }
+    .blob-3 {
+      width: 300px; height: 300px;
+      background: rgba(0,140,220,0.13);
+      top: 50%; left: 55%;
+      animation: blobMove3 20s ease-in-out infinite alternate;
+    }
+
+    @keyframes blobMove1 {
+      0%   { transform: translate(0,0) scale(1); }
+      50%  { transform: translate(60px,40px) scale(1.08); }
+      100% { transform: translate(20px,80px) scale(0.95); }
+    }
+    @keyframes blobMove2 {
+      0%   { transform: translate(0,0) scale(1); }
+      50%  { transform: translate(-50px,-30px) scale(1.1); }
+      100% { transform: translate(-20px,-70px) scale(0.92); }
+    }
+    @keyframes blobMove3 {
+      0%   { transform: translate(0,0) scale(1); }
+      50%  { transform: translate(-40px,30px) scale(1.15); }
+      100% { transform: translate(30px,-40px) scale(0.9); }
+    }
+
+    /* -- Top bar ------------------------------- */
+    .topbar {
+      width: 100%;
+      padding: 20px 32px;
+      display: flex;
+      align-items: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .topbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .topbar-icon {
+      width: 32px; height: 32px;
+      background: rgba(0,75,147,0.12);
+      border: 1px solid rgba(0,75,147,0.2);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .topbar-icon svg { width: 15px; height: 15px; }
+
+    .topbar-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--brand-blue);
+      letter-spacing: -0.01em;
+    }
+
+    .topbar-sub {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-top: 1px;
+    }
+
+    /* -- Main content -------------------------- */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0 16px 80px;
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      animation: fadeUp 0.35s ease both;
+    }
+
+    .welcome-sub {
+      font-size: 15px;
+      font-weight: 400;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .main-title {
+      font-size: clamp(30px, 5vw, 44px);
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.03em;
+      text-align: center;
+      line-height: 1.1;
+      margin-bottom: 10px;
+    }
+
+    .main-subtitle {
+      font-size: 15px;
+      color: var(--text-muted);
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    /* -- SSO button ---------------------------- */
+    .btn-sso {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      max-width: 380px;
+      padding: 16px 22px;
+      background: var(--brand-blue);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, box-shadow 0.2s, transform 0.1s;
+      letter-spacing: -0.01em;
+      box-shadow: 0 4px 20px rgba(0,75,147,0.28);
+    }
+
+    .btn-sso:hover {
+      background: var(--brand-blue-mid);
+      box-shadow: 0 6px 28px rgba(0,75,147,0.38);
+      transform: translateY(-1px);
+    }
+
+    .btn-sso:active { transform: translateY(0); opacity: 0.95; }
+
+    .sso-logo {
+      width: 30px; height: 30px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .sso-logo svg { width: 16px; height: 16px; }
+
+    .btn-sso-text { flex: 1; text-align: left; }
+
+    .btn-sso-main { display: block; }
+
+    .btn-sso-hint {
+      display: block;
+      font-size: 11px;
+      font-weight: 400;
+      opacity: 0.6;
+    }
+
+    .btn-sso-arrow { font-size: 20px; opacity: 0.5; }
+
+    /* -- Admin toggle -------------------------- */
+    .admin-toggle-wrap {
+      margin-top: 10px;
+      width: 100%;
+      max-width: 380px;
+      text-align: right;
+    }
+
+    .admin-toggle-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: 5px;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .admin-toggle-btn:hover {
+      color: var(--brand-blue);
+      background: rgba(0,75,147,0.07);
+    }
+
+    /* -- Admin panel --------------------------- */
+    .admin-panel {
+      margin-top: 20px;
+      width: 100%;
+      max-width: 380px;
+      background: rgba(255,255,255,0.82);
+      border: 1px solid rgba(255,255,255,0.95);
+      border-radius: 12px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      padding: 22px 24px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.07);
+      animation: fadeUp 0.2s ease both;
+    }
+
+    .admin-panel-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .admin-panel-label::before,
+    .admin-panel-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: rgba(0,0,0,0.1);
+    }
+
+    .admin-form { display: flex; flex-direction: column; gap: 12px; }
+
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
+
+    .form-group label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #374151;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .form-input {
+      background: rgba(255,255,255,0.9);
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      width: 100%;
+    }
+
+    .form-input:focus {
+      border-color: var(--brand-blue);
+      box-shadow: 0 0 0 3px rgba(0,75,147,0.1);
+      background: #fff;
+    }
+
+    .form-input::placeholder { color: #b0b8c4; }
+
+    .password-wrapper { position: relative; }
+    .password-wrapper input { padding-right: 52px; }
+
+    .pw-toggle {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      padding: 2px 4px;
+      transition: color 0.15s;
+      text-transform: uppercase;
+    }
+
+    .pw-toggle:hover { color: var(--brand-blue); }
+
+    .btn-admin {
+      background: #fff;
+      color: var(--brand-blue);
+      border: 1.5px solid var(--brand-blue);
+      border-radius: 6px;
+      padding: 11px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+      margin-top: 2px;
+      letter-spacing: -0.01em;
+      width: 100%;
+    }
+
+    .btn-admin:hover {
+      background: var(--brand-blue);
+      color: #fff;
+      box-shadow: 0 2px 10px rgba(0,75,147,0.2);
+    }
+
+    .btn-admin:disabled { opacity: 0.7; cursor: not-allowed; }
+
+    .error-banner {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 5px;
+      color: var(--error);
+      font-size: 12px;
+      padding: 8px 12px;
+      display: none;
+      line-height: 1.4;
+    }
+
+    .error-banner.show { display: block; }
+
+    .spinner {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border: 1.5px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+
+    .page-credit {
+      position: fixed;
+      bottom: 18px;
+      right: 24px;
+      font-size: 11px;
+      color: var(--text-muted);
+      opacity: 0.65;
+      z-index: 2;
+      text-align: right;
+      pointer-events: none;
+      font-family: var(--sans);
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+
+  <!-- Top bar -->
+  <nav class="topbar">
+    <div class="topbar-brand">
+      <div class="topbar-icon">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1" y="9" width="2" height="6" rx="1" fill="#004B93" opacity="0.9"/>
+          <rect x="5" y="6" width="2" height="9" rx="1" fill="#004B93" opacity="0.9"/>
+          <rect x="9" y="3" width="2" height="12" rx="1" fill="#004B93" opacity="0.9"/>
+          <rect x="13" y="1" width="2" height="14" rx="1" fill="#004B93" opacity="0.9"/>
+        </svg>
+      </div>
+      <div>
+        <div class="topbar-name">Log Dashboard</div>
+        <div class="topbar-sub">Self-hosted observability</div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main-content">
+    <p class="welcome-sub">Welcome to</p>
+    <h1 class="main-title">Log Dashboard</h1>
+    <p class="main-subtitle">Centralized logs and operations</p>
+
+    <!-- SSO login is intentionally disabled for now. Keep this frontend markup as a reference for a future Google/OIDC replacement.
+    <a id="btn-sso" class="btn-sso" href="/logstore/auth/sso">
+      <span class="sso-logo">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="8" cy="5.5" r="3" stroke="white" stroke-width="1.4"/>
+          <path d="M2 14c0-3.314 2.686-5 6-5s6 1.686 6 5" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="btn-sso-text">
+        <span class="btn-sso-main">Login with SSO</span>
+        <span class="btn-sso-hint">Use your identity provider</span>
+      </span>
+      <span class="btn-sso-arrow">&rsaquo;</span>
+    </a>
+    -->
+
+    <!-- Legacy admin toggle disabled: local username/password login is now the primary path.
+    <div class="admin-toggle-wrap">
+      <button type="button" id="admin-toggle" class="admin-toggle-btn">Or Login as Admin</button>
+    </div>
+    -->
+
+    <div id="admin-section" class="admin-panel">
+      <div class="admin-panel-label">Sign in</div>
+      <form class="admin-form" id="admin-form">
+        <div class="error-banner" id="error-msg"></div>
+
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input id="username" class="form-input" type="text" placeholder="username" autocomplete="username" required />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Password</label>
+          <div class="password-wrapper">
+            <input id="password" class="form-input" type="password" placeholder="password" autocomplete="current-password" required />
+            <button type="button" id="pw-toggle" class="pw-toggle" tabindex="-1">show</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-admin" id="login-btn">Sign in</button>
+      </form>
+    </div>
+  </main>
+
+  <div class="page-credit">Created by Thanapon<br>Server Operator Intern</div>
+
+  <script>
+    const pwToggle = document.getElementById("pw-toggle");
+    const pwInput = document.getElementById("password");
+
+    pwToggle.addEventListener("click", () => {
+      const hidden = pwInput.getAttribute("type") === "password";
+      pwInput.setAttribute("type", hidden ? "text" : "password");
+      pwToggle.textContent = hidden ? "hide" : "show";
+    });
+
+    document.getElementById("admin-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("login-btn");
+      const errEl = document.getElementById("error-msg");
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Signing in...';
+      errEl.classList.remove("show");
+
+      try {
+        const res = await fetch("/logstore/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+          credentials: "include"
+        });
+
+        if (res.ok) {
+          if (typeof BroadcastChannel !== "undefined") {
+            new BroadcastChannel("logdash_auth").postMessage({ type: "login" });
+          }
+          window.location.href = "/logstore/";
+        } else {
+          const data = await res.json().catch(() => ({}));
+          errEl.textContent = data.detail || "Invalid username or password";
+          errEl.classList.add("show");
+        }
+      } catch {
+        errEl.textContent = "Could not connect to the server";
+        errEl.classList.add("show");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

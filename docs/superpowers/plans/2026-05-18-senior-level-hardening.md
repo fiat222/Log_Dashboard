@@ -21,20 +21,20 @@
 ### Task A1: Typed query parameter models
 
 **Files:**
-- Create: `backend/models/__init__.py`
-- Create: `backend/models/query_params.py`
-- Create: `backend/tests/__init__.py`
-- Create: `backend/tests/conftest.py`
-- Create: `backend/tests/test_query_params.py`
+- Create: `apps/api/models/__init__.py`
+- Create: `apps/api/models/query_params.py`
+- Create: `apps/api/tests/__init__.py`
+- Create: `apps/api/tests/conftest.py`
+- Create: `apps/api/tests/test_query_params.py`
 
 - [ ] **Step A1.1: Create models package**
 
 ```bash
-mkdir -p backend/models backend/tests
-touch backend/models/__init__.py backend/tests/__init__.py
+mkdir -p apps/api/models apps/api/tests
+touch apps/api/models/__init__.py apps/api/tests/__init__.py
 ```
 
-- [ ] **Step A1.2: Write `backend/models/query_params.py`**
+- [ ] **Step A1.2: Write `apps/api/models/query_params.py`**
 
 ```python
 from pydantic import BaseModel, Field
@@ -76,7 +76,7 @@ class AnalyticsQueryParams(BaseModel):
     group_by: str = Field(default="hour", pattern="^(minute|hour|day)$")
 ```
 
-- [ ] **Step A1.3: Write `backend/tests/conftest.py`**
+- [ ] **Step A1.3: Write `apps/api/tests/conftest.py`**
 
 ```python
 import pytest
@@ -96,7 +96,7 @@ def sample_time_range():
     }
 ```
 
-- [ ] **Step A1.4: Write failing tests in `backend/tests/test_query_params.py`**
+- [ ] **Step A1.4: Write failing tests in `apps/api/tests/test_query_params.py`**
 
 ```python
 import pytest
@@ -162,7 +162,7 @@ Expected: All 7 tests **PASS**.
 - [ ] **Step A1.7: Commit**
 
 ```bash
-git add backend/models/ backend/tests/
+git add apps/api/models/ apps/api/tests/
 git commit -m "feat(api): add typed query param models with validation"
 ```
 
@@ -171,11 +171,11 @@ git commit -m "feat(api): add typed query param models with validation"
 ### Task A2: Parameterized query builder
 
 **Files:**
-- Create: `backend/services/__init__.py`
-- Create: `backend/services/query_builder.py`
-- Create: `backend/tests/test_query_builder.py`
+- Create: `apps/api/services/__init__.py`
+- Create: `apps/api/services/query_builder.py`
+- Create: `apps/api/tests/test_query_builder.py`
 
-- [ ] **Step A2.1: Write failing tests in `backend/tests/test_query_builder.py`**
+- [ ] **Step A2.1: Write failing tests in `apps/api/tests/test_query_builder.py`**
 
 ```python
 import pytest
@@ -249,13 +249,13 @@ python -m pytest tests/test_query_builder.py -v
 
 Expected: `ImportError: cannot import name 'build_logs_query' from 'services.query_builder'`
 
-- [ ] **Step A2.3: Create `backend/services/__init__.py`**
+- [ ] **Step A2.3: Create `apps/api/services/__init__.py`**
 
 ```bash
-touch backend/services/__init__.py
+touch apps/api/services/__init__.py
 ```
 
-- [ ] **Step A2.4: Write `backend/services/query_builder.py`**
+- [ ] **Step A2.4: Write `apps/api/services/query_builder.py`**
 
 ```python
 from typing import Optional, List, Tuple, Dict, Any
@@ -353,7 +353,7 @@ Expected: All 8 tests **PASS**.
 - [ ] **Step A2.6: Commit**
 
 ```bash
-git add backend/services/ backend/tests/test_query_builder.py
+git add apps/api/services/ apps/api/tests/test_query_builder.py
 git commit -m "feat(api): parameterized query builder — no raw SQL from client"
 ```
 
@@ -362,10 +362,10 @@ git commit -m "feat(api): parameterized query builder — no raw SQL from client
 ### Task A3: Typed FastAPI endpoints
 
 **Files:**
-- Modify: `backend/main.py` — add typed GET endpoints; keep `/query` POST but mark deprecated
-- Create: `backend/tests/test_api_endpoints.py`
+- Modify: `apps/api/main.py` — add typed GET endpoints; keep `/query` POST but mark deprecated
+- Create: `apps/api/tests/test_api_endpoints.py`
 
-- [ ] **Step A3.1: Write failing tests in `backend/tests/test_api_endpoints.py`**
+- [ ] **Step A3.1: Write failing tests in `apps/api/tests/test_api_endpoints.py`**
 
 ```python
 import sys
@@ -412,12 +412,12 @@ Expected: `test_logs_typed_endpoint_exists` fails with 404.
 - [ ] **Step A3.3: Find existing dependency names in main.py**
 
 ```bash
-grep -n "Depends(" backend/main.py | head -20
+grep -n "Depends(" apps/api/main.py | head -20
 ```
 
 Note the exact names for: current user dependency, ClickHouse dependency. You will use these exact names in A3.4.
 
-- [ ] **Step A3.4: Add typed endpoints to `backend/main.py`**
+- [ ] **Step A3.4: Add typed endpoints to `apps/api/main.py`**
 
 Add after the existing imports block at the top:
 
@@ -465,7 +465,7 @@ Expected: All 5 tests **PASS**.
 - [ ] **Step A3.6: Commit**
 
 ```bash
-git add backend/main.py backend/tests/test_api_endpoints.py
+git add apps/api/main.py apps/api/tests/test_api_endpoints.py
 git commit -m "feat(api): add typed GET /api/logs and GET /api/nginx endpoints"
 ```
 
@@ -473,7 +473,7 @@ git commit -m "feat(api): add typed GET /api/logs and GET /api/nginx endpoints"
 
 ## Sub-Plan B: Backend Modularization
 
-**Problem:** `backend/main.py` is 107KB. No separation of concerns. Hard to review, test, or onboard.
+**Problem:** `apps/api/main.py` is 107KB. No separation of concerns. Hard to review, test, or onboard.
 
 **Fix:** Extract routes into FastAPI routers. Do NOT rewrite logic — move it verbatim. Same function bodies, different file.
 
@@ -487,7 +487,7 @@ git commit -m "feat(api): add typed GET /api/logs and GET /api/nginx endpoints"
 - [ ] **Step B1.1: Map all routes**
 
 ```bash
-grep -n "@app\.\(get\|post\|put\|delete\|patch\)" backend/main.py
+grep -n "@app\.\(get\|post\|put\|delete\|patch\)" apps/api/main.py
 ```
 
 Group by URL prefix:
@@ -503,7 +503,7 @@ Group by URL prefix:
 - [ ] **Step B1.2: Map all shared dependencies**
 
 ```bash
-grep -n "^def \|^async def " backend/main.py | grep -v "^.*@app" | head -40
+grep -n "^def \|^async def " apps/api/main.py | grep -v "^.*@app" | head -40
 ```
 
 Identify: DB connection factories, auth helpers, middleware functions. These move to `services/` not routers.
@@ -513,21 +513,21 @@ Identify: DB connection factories, auth helpers, middleware functions. These mov
 ### Task B2: Create router files
 
 **Files:**
-- Create: `backend/routers/__init__.py`
-- Create: `backend/routers/auth.py`
-- Create: `backend/routers/logs.py`
-- Create: `backend/routers/nginx.py`
-- Create: `backend/routers/admin.py`
-- Create: `backend/routers/backup.py`
+- Create: `apps/api/routers/__init__.py`
+- Create: `apps/api/routers/auth.py`
+- Create: `apps/api/routers/logs.py`
+- Create: `apps/api/routers/nginx.py`
+- Create: `apps/api/routers/admin.py`
+- Create: `apps/api/routers/backup.py`
 
 - [ ] **Step B2.1: Create routers package**
 
 ```bash
-mkdir -p backend/routers
-touch backend/routers/__init__.py
+mkdir -p apps/api/routers
+touch apps/api/routers/__init__.py
 ```
 
-- [ ] **Step B2.2: Create `backend/routers/auth.py`**
+- [ ] **Step B2.2: Create `apps/api/routers/auth.py`**
 
 ```python
 from fastapi import APIRouter
@@ -540,7 +540,7 @@ router = APIRouter(tags=["auth"])
 # Copy any imports those functions need.
 ```
 
-- [ ] **Step B2.3: Create `backend/routers/logs.py`**
+- [ ] **Step B2.3: Create `apps/api/routers/logs.py`**
 
 ```python
 from fastapi import APIRouter
@@ -550,7 +550,7 @@ router = APIRouter(tags=["logs"])
 # MOVE all /api/logs*, /api/analytics*, /api/patterns* routes here.
 ```
 
-- [ ] **Step B2.4: Create `backend/routers/nginx.py`**
+- [ ] **Step B2.4: Create `apps/api/routers/nginx.py`**
 
 ```python
 from fastapi import APIRouter
@@ -560,7 +560,7 @@ router = APIRouter(tags=["nginx"])
 # MOVE all /api/nginx* routes here.
 ```
 
-- [ ] **Step B2.5: Create `backend/routers/admin.py`**
+- [ ] **Step B2.5: Create `apps/api/routers/admin.py`**
 
 ```python
 from fastapi import APIRouter
@@ -570,7 +570,7 @@ router = APIRouter(tags=["admin"])
 # MOVE all /api/admin* routes (except backup) here.
 ```
 
-- [ ] **Step B2.6: Create `backend/routers/backup.py`**
+- [ ] **Step B2.6: Create `apps/api/routers/backup.py`**
 
 ```python
 from fastapi import APIRouter
@@ -583,7 +583,7 @@ router = APIRouter(tags=["backup"])
 - [ ] **Step B2.7: Commit router skeletons**
 
 ```bash
-git add backend/routers/
+git add apps/api/routers/
 git commit -m "refactor(backend): create router files — move routes from main.py"
 ```
 
@@ -592,10 +592,10 @@ git commit -m "refactor(backend): create router files — move routes from main.
 ### Task B3: Create app factory
 
 **Files:**
-- Create: `backend/app.py`
-- Modify: `backend/main.py` — becomes thin entry point
+- Create: `apps/api/app.py`
+- Modify: `apps/api/main.py` — becomes thin entry point
 
-- [ ] **Step B3.1: Write `backend/app.py`**
+- [ ] **Step B3.1: Write `apps/api/app.py`**
 
 ```python
 from fastapi import FastAPI
@@ -619,7 +619,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step B3.2: Update `backend/main.py` to thin entry point**
+- [ ] **Step B3.2: Update `apps/api/main.py` to thin entry point**
 
 Replace all route definitions (already moved to routers) with:
 
@@ -634,7 +634,7 @@ if __name__ == "__main__":
 - [ ] **Step B3.3: Run all tests**
 
 ```bash
-python -m pytest backend/tests/ -v
+python -m pytest apps/api/tests/ -v
 ```
 
 Expected: All previous tests **PASS**. If any 404, check router prefix — routers registered with `prefix="/api"` means don't include `/api` in the `@router.get(...)` path.
@@ -652,7 +652,7 @@ Expected: `{"status": "ok"}` — same response as before refactor.
 - [ ] **Step B3.5: Commit**
 
 ```bash
-git add backend/app.py backend/main.py
+git add apps/api/app.py apps/api/main.py
 git commit -m "refactor(backend): app factory + thin main.py entry point"
 ```
 
@@ -667,9 +667,9 @@ git commit -m "refactor(backend): app factory + thin main.py entry point"
 ### Task C1: ops.backup_runs ClickHouse table
 
 **Files:**
-- Modify: `clickhouse/init.sql`
+- Modify: `infra/clickhouse/init.sql`
 
-- [ ] **Step C1.1: Add to `clickhouse/init.sql`**
+- [ ] **Step C1.1: Add to `infra/clickhouse/init.sql`**
 
 Append after existing table definitions:
 
@@ -725,7 +725,7 @@ Expected: 5 columns listed (timestamp, status, duration_s, size_bytes, error_msg
 - [ ] **Step C1.4: Commit**
 
 ```bash
-git add clickhouse/init.sql
+git add infra/clickhouse/init.sql
 git commit -m "feat(clickhouse): add ops.backup_runs table with 90-day TTL"
 ```
 
@@ -734,7 +734,7 @@ git commit -m "feat(clickhouse): add ops.backup_runs table with 90-day TTL"
 ### Task C2: Record backup result in backup.sh
 
 **Files:**
-- Modify: `backup/backup.sh`
+- Modify: `apps/backup/backup.sh`
 
 - [ ] **Step C2.1: Add start timer after DATE variable (line ~8)**
 
@@ -804,22 +804,22 @@ Expected: 1 row, `status = success`, non-zero `duration_s` and `size_bytes`.
 - [ ] **Step C2.5: Commit**
 
 ```bash
-git add backup/backup.sh
+git add apps/backup/backup.sh
 git commit -m "feat(backup): record run result to ops.backup_runs + enable 30-day cleanup"
 ```
 
 ---
 
-### Task C3: Backend /api/backup/status endpoint
+### Task C3: Backend /api/apps/backup/status endpoint
 
 **Files:**
-- Modify: `backend/main.py` (or `backend/routers/backup.py` if Sub-plan B done)
-- Create: `backend/tests/test_backup_api.py`
+- Modify: `apps/api/main.py` (or `apps/api/routers/backup.py` if Sub-plan B done)
+- Create: `apps/api/tests/test_backup_api.py`
 
 - [ ] **Step C3.1: Write failing tests**
 
 ```python
-# backend/tests/test_backup_api.py
+# apps/api/tests/test_backup_api.py
 import sys
 sys.path.insert(0, ".")
 from fastapi.testclient import TestClient
@@ -829,18 +829,18 @@ client = TestClient(app)
 
 
 def test_backup_status_endpoint_exists():
-    resp = client.get("/api/backup/status")
-    assert resp.status_code != 404, "GET /api/backup/status must exist"
+    resp = client.get("/api/apps/backup/status")
+    assert resp.status_code != 404, "GET /api/apps/backup/status must exist"
 
 
 def test_backup_status_requires_auth():
-    resp = client.get("/api/backup/status")
+    resp = client.get("/api/apps/backup/status")
     assert resp.status_code == 401
 
 
 def test_backup_trigger_endpoint_exists():
-    resp = client.post("/api/backup/trigger")
-    assert resp.status_code != 404, "POST /api/backup/trigger must exist"
+    resp = client.post("/api/apps/backup/trigger")
+    assert resp.status_code != 404, "POST /api/apps/backup/trigger must exist"
 ```
 
 - [ ] **Step C3.2: Run — expect FAIL**
@@ -851,10 +851,10 @@ python -m pytest tests/test_backup_api.py::test_backup_status_endpoint_exists -v
 
 Expected: FAIL (404).
 
-- [ ] **Step C3.3: Add endpoint to `backend/main.py`**
+- [ ] **Step C3.3: Add endpoint to `apps/api/main.py`**
 
 ```python
-@app.get("/api/backup/status")
+@app.get("/api/apps/backup/status")
 async def get_backup_status(
     current_user=Depends(<YOUR_AUTH_DEPENDENCY>),
     ch=Depends(<YOUR_CH_DEPENDENCY>),
@@ -892,8 +892,8 @@ Expected: All 3 tests **PASS**.
 - [ ] **Step C3.5: Commit**
 
 ```bash
-git add backend/main.py backend/tests/test_backup_api.py
-git commit -m "feat(api): GET /api/backup/status returns ops.backup_runs history"
+git add apps/api/main.py apps/api/tests/test_backup_api.py
+git commit -m "feat(api): GET /api/apps/backup/status returns ops.backup_runs history"
 ```
 
 ---
@@ -901,11 +901,11 @@ git commit -m "feat(api): GET /api/backup/status returns ops.backup_runs history
 ### Task C4: Backup panel in Admin tab
 
 **Files:**
-- Modify: `dashboard/index.html`
-- Modify: `dashboard/app.js`
-- Modify: `dashboard/style.css`
+- Modify: `apps/web/index.html`
+- Modify: `apps/web/app.js`
+- Modify: `apps/web/style.css`
 
-- [ ] **Step C4.1: Add HTML panel to `dashboard/index.html`**
+- [ ] **Step C4.1: Add HTML panel to `apps/web/index.html`**
 
 Inside `#admin-section`, add after the manual trigger button:
 
@@ -932,14 +932,14 @@ Inside `#admin-section`, add after the manual trigger button:
 </div>
 ```
 
-- [ ] **Step C4.2: Add `loadBackupStatus()` to `dashboard/app.js`**
+- [ ] **Step C4.2: Add `loadBackupStatus()` to `apps/web/app.js`**
 
 Add this function near the other admin load functions:
 
 ```javascript
 async function loadBackupStatus() {
   try {
-    const resp = await fetch(`${API_BASE}/backup/status`);
+    const resp = await fetch(`${API_BASE}/apps/backup/status`);
     if (!resp.ok) throw new Error(await resp.text());
     const { history, last_success } = await resp.json();
 
@@ -981,7 +981,7 @@ loadBackupStatus();
 document.getElementById('btn-refresh-backup').addEventListener('click', loadBackupStatus);
 ```
 
-- [ ] **Step C4.3: Add CSS to `dashboard/style.css`**
+- [ ] **Step C4.3: Add CSS to `apps/web/style.css`**
 
 ```css
 .backup-status-badge {
@@ -1012,7 +1012,7 @@ Verify: history table renders, status badge shows last success timestamp and fil
 - [ ] **Step C4.5: Commit**
 
 ```bash
-git add dashboard/index.html dashboard/app.js dashboard/style.css
+git add apps/web/index.html apps/web/app.js apps/web/style.css
 git commit -m "feat(ui): backup monitor panel in admin tab"
 ```
 
@@ -1095,11 +1095,11 @@ git commit -m "fix(compose): add host.docker.internal for Node Exporter scrape"
 ### Task D2: Add prometheus receiver to OTel Gateway
 
 **Files:**
-- Modify: `otel/gateway-config.yaml`
+- Modify: `infra/otel/gateway-config.yaml`
 
 - [ ] **Step D2.1: Add prometheus receiver block**
 
-In `otel/gateway-config.yaml`, add to the `receivers:` section:
+In `infra/otel/gateway-config.yaml`, add to the `receivers:` section:
 
 ```yaml
   prometheus:
@@ -1147,7 +1147,7 @@ Expected: Counter with `receiver="prometheus"` label, non-zero value.
 - [ ] **Step D2.5: Commit**
 
 ```bash
-git add otel/gateway-config.yaml
+git add infra/otel/gateway-config.yaml
 git commit -m "feat(otel): prometheus receiver scraping node_exporter and cadvisor"
 ```
 
@@ -1156,9 +1156,9 @@ git commit -m "feat(otel): prometheus receiver scraping node_exporter and cadvis
 ### Task D3: ClickHouse metrics tables
 
 **Files:**
-- Modify: `clickhouse/init.sql`
+- Modify: `infra/clickhouse/init.sql`
 
-- [ ] **Step D3.1: Add tables to `clickhouse/init.sql`**
+- [ ] **Step D3.1: Add tables to `infra/clickhouse/init.sql`**
 
 ```sql
 CREATE DATABASE IF NOT EXISTS metrics;
@@ -1249,7 +1249,7 @@ Expected: > 0 rows after OTel Gateway has been running 60+ seconds with promethe
 - [ ] **Step D3.5: Commit**
 
 ```bash
-git add clickhouse/init.sql
+git add infra/clickhouse/init.sql
 git commit -m "feat(clickhouse): metrics.host_metrics (30d TTL) and metrics.container_metrics (7d TTL)"
 ```
 
@@ -1278,7 +1278,7 @@ git commit -m "fix: persist ch-ui SQLite DB in named volume"
 
 - [ ] **Fix: Bind OTel metrics to localhost only**
 
-In `otel/gateway-config.yaml`:
+In `infra/otel/gateway-config.yaml`:
 ```yaml
 service:
   telemetry:
@@ -1287,7 +1287,7 @@ service:
 ```
 Commit:
 ```bash
-git add otel/gateway-config.yaml
+git add infra/otel/gateway-config.yaml
 git commit -m "fix(security): bind OTel metrics :8888 to localhost only"
 ```
 

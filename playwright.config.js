@@ -6,8 +6,8 @@ module.exports = defineConfig({
   expect: {
     timeout: 5_000,
   },
+  reporter: [["list"], ["junit", { outputFile: "reports/ui-playwright.xml" }]],
   use: {
     viewport: { width: 1366, height: 768 },
   },
 });
-

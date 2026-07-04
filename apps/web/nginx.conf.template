@@ -1,0 +1,182 @@
+# nginx.conf.template — Log Dashboard (Fixed Static Assets)
+
+server {
+    listen 80;
+    server_name _;
+
+    # ── Security headers ───────────────────────────────────────────────────────
+    add_header X-Frame-Options       "SAMEORIGIN"  always;
+    add_header X-Content-Type-Options "nosniff"    always;
+    add_header Referrer-Policy       "strict-origin" always;
+
+    # ── Path prefix: /logstore ────────────────────────────────────────────────────────
+    
+    # SSO Callback interceptor for the new Redirect URI
+    location = /logstore/callback/login {
+        proxy_pass         http://backend:8000/auth/callback;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # Login page & fallback SSO interceptor
+    location = /logstore/login {
+        if ($arg_code) {
+            rewrite ^ /logstore/auth/callback last;
+        }
+        alias /usr/share/nginx/html/login/;
+        try_files index.html =404;
+    }
+    location /logstore/login/ {
+        alias /usr/share/nginx/html/login/;
+        try_files $uri $uri/ /login/index.html;
+    }
+
+    # Backend API Proxy
+    location /logstore/api/ {
+        proxy_pass         http://backend:8000/api/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_buffering    off;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+    }
+
+    location /logstore/auth/ {
+        proxy_pass         http://backend:8000/auth/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+    }
+
+    # SSO redirect URI support
+    location = /login/generic_oauth {
+        proxy_pass         http://backend:8000/auth/callback;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # ── ClickHouse raw HTTP API ────────────────────────────────────────────────
+    location /logstore/ch-api/ {
+        proxy_pass         http://clickhouse:8123/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+
+        add_header Access-Control-Allow-Origin  "https://monitor-eila.psu.ac.th" always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
+    }
+
+    # ── ch-ui assets (sub_filter JS to rewrite /api/ paths) ─────────────────
+    location /logstore/clickhouse/assets/ {
+        proxy_pass         http://ch-ui:3488/assets/;
+        proxy_set_header   Host $host;
+        proxy_set_header   Accept-Encoding "";
+        expires            1h;
+        add_header         Cache-Control "public, no-transform";
+        sub_filter         '"/api/'     '"/logstore/clickhouse/api/';
+        sub_filter         "'/api/"     "'/logstore/clickhouse/api/";
+        sub_filter         '`/api/'     '`/logstore/clickhouse/api/';
+        sub_filter         '"/connect"' '"/logstore/clickhouse/connect"';
+        sub_filter         "'/connect'" "'/logstore/clickhouse/connect'";
+        sub_filter_once    off;
+        sub_filter         '/assets/'    '/logstore/clickhouse/assets/';
+        sub_filter_types   application/javascript text/javascript text/css;
+    }
+
+    # ── ch-ui logo (root-absolute path) ──────────────────────────────────────
+    location ~* ^/[^/]+\.(png|ico|svg|webp)$ {
+        proxy_pass         http://ch-ui:3488$request_uri;
+        proxy_set_header   Host $host;
+        expires            1h;
+    }
+
+    # ── ch-ui internal API ────────────────────────────────────────────────────
+    location /logstore/clickhouse/api/ {
+        proxy_pass         http://ch-ui:3488/api/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+    }
+
+    # ── ch-ui WebSocket tunnel ────────────────────────────────────────────────
+    location /logstore/clickhouse/connect {
+        proxy_pass         http://ch-ui:3488/connect;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+
+    # ── ch-ui SPA — rewrite all root-absolute paths to /logstore/clickhouse/ ──
+    location /logstore/clickhouse/ {
+        proxy_pass         http://ch-ui:3488/;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Accept-Encoding "";
+        sub_filter         '/assets/'    '/logstore/clickhouse/assets/';
+        sub_filter         '"/api/'      '"/logstore/clickhouse/api/';
+        sub_filter         "'/api/"      "'/logstore/clickhouse/api/";
+        sub_filter         '`/api/'      '`/logstore/clickhouse/api/';
+        sub_filter         '"/connect"'  '"/logstore/clickhouse/connect"';
+        sub_filter         "'/connect'"  "'/logstore/clickhouse/connect'";
+        sub_filter         '</head>'     '<script>!function(){var f=window.fetch;window.fetch=function(u,o){return typeof u==="string"&&(u.startsWith("/api/")||u.startsWith("/assets/"))&&(u="/logstore/clickhouse"+u),f.call(this,u,o)};var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==="string"&&(u.startsWith("/api/")||u.startsWith("/assets/")))u="/logstore/clickhouse"+u;return x.apply(this,arguments)}}();</script></head>';
+        sub_filter_once    off;
+        sub_filter_types   text/html;
+    }
+
+    # Docusaurus docs (static build)
+    location /logstore/docs/ {
+        alias /usr/share/nginx/html/docs/;
+        index index.html;
+        try_files $uri $uri/ $uri.html /logstore/docs/index.html;
+    }
+
+    # Static dashboard files & Assets
+    location /logstore/ {
+        alias   /usr/share/nginx/html/;
+        index   index.html;
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, no-store" always;
+
+        # ชุดนี้จะจัดการไฟล์ .css, .js ให้ดึงจาก alias ด้านบนได้ถูกต้อง
+        location ~* \.(css|js|woff2?|png|ico|svg)$ {
+            access_log off;
+            expires 1h;
+            add_header Cache-Control "public, no-transform";
+        }
+    }
+
+    location = /logstore {
+        return 301 /logstore/;
+    }
+
+    # ── Health check ───────────────────────────────────────────────────────────
+    location /health {
+        return 200 "ok";
+        add_header Content-Type text/plain;
+    }
+}

@@ -28,11 +28,11 @@ docker compose logs -f backend
 docker compose logs -f log-dashboard
 
 # Rebuild all images and push to registry
-./deploy-registry.ps1   # Windows PowerShell
-./deploy.sh             # Linux
+./deploy/deploy-registry.ps1   # Windows PowerShell
+./deploy/deploy.sh             # Linux
 
 # Promote a tag to production
-./promote.ps1
+./deploy/promote.ps1
 ```
 
 ## Architecture
@@ -42,19 +42,19 @@ docker compose logs -f log-dashboard
 `Vector` (Nginx logs) → `OTel Gateway` (OTLP/HTTP :4318) → `ClickHouse`
 
 **Auth/query flow:**
-Browser → `Traefik` (80/443) → `Nginx` (serves `dashboard/`) → proxies `/logstore/api` → `FastAPI backend` → `ClickHouse` + `PostgreSQL` + `Redis`
+Browser → `Traefik` (80/443) → `Nginx` (serves `apps/web/`) → proxies `/logstore/api` → `FastAPI backend` → `ClickHouse` + `PostgreSQL` + `Redis`
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `dashboard/app.js` | All frontend logic — single JS file, ~2500 lines. State-driven SPA. |
-| `dashboard/index.html` | DOM structure — tabs (Logs, Analytics, Nginx, Patterns, Admin), modals |
-| `dashboard/style.css` | All styles — CSS vars for light/dark themes, no framework |
-| `backend/main.py` | FastAPI app — auth, ClickHouse proxy, role-based filtering, SSE notifications |
-| `clickhouse/init.sql` | ClickHouse schema — Null engine ingress + Materialized View + MergeTree storage |
-| `otel/agent-config.yaml` | OTel Agent config (reads Docker logs from host) |
-| `otel/gateway-config.yaml` | OTel Gateway config (receives, batches, writes to ClickHouse) |
+| `apps/web/app.js` | All frontend logic — single JS file, ~2500 lines. State-driven SPA. |
+| `apps/web/index.html` | DOM structure — tabs (Logs, Analytics, Nginx, Patterns, Admin), modals |
+| `apps/web/style.css` | All styles — CSS vars for light/dark themes, no framework |
+| `apps/api/main.py` | FastAPI app — auth, ClickHouse proxy, role-based filtering, SSE notifications |
+| `infra/clickhouse/init.sql` | ClickHouse schema — Null engine ingress + Materialized View + MergeTree storage |
+| `infra/otel/agent-config.yaml` | OTel Agent config (reads Docker logs from host) |
+| `infra/otel/gateway-config.yaml` | OTel Gateway config (receives, batches, writes to ClickHouse) |
 | `docker-compose.yml` | Full stack definition |
 
 ## Frontend Architecture (`app.js`)

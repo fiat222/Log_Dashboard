@@ -45,7 +45,7 @@ Edit `.env`:
 - Set strong `REDIS_PASSWORD`.
 - Set strong `CLICKHOUSE_PASSWORD`.
 - Set local/dev cookie mode if using HTTP.
-- Configure database URL.
+- Set strong `POSTGRES_PASSWORD` for the local metadata DB.
 - Configure app base path/domain.
 
 Start:

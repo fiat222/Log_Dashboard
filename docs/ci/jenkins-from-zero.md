@@ -2,193 +2,105 @@
 
 ## What Jenkins Does
 
-Jenkins runs repeatable workflows for the project.
-
-For this project, Jenkins should run:
+Jenkins runs repeatable checks for the project:
 
 ```text
 checkout code
-  ↓
-backend tests
-  ↓
-UI tests
-  ↓
-compose config checks
-  ↓
-security checks
+  -> backend tests
+  -> UI tests
+  -> compose config checks
+  -> security checks
 ```
 
-Later it can build images, push registry tags, and deploy.
+Later it can build images or deploy, but that is out of scope for CI v1.
+
+## Current Jenkins Folder
+
+Jenkins has been moved out of this repository:
+
+```text
+D:/PSU/Jenkins
+```
+
+Expected files there:
+
+```text
+docker-compose.yml
+Dockerfile
+README.md
+```
 
 ## Check Existing Jenkins
 
-On Windows, check service:
-
 ```powershell
-Get-Service -Name '*jenkins*' -ErrorAction SilentlyContinue
+docker ps -a --filter name=jenkins
 ```
 
-Check Docker containers:
-
-```powershell
-docker ps -a --filter "name=jenkins"
-```
-
-If another Jenkins already uses port `8080`, this project uses `8081`.
-
-## Start Local Jenkins
-
-```powershell
-docker compose -f ci/jenkins/docker-compose.yml up -d --build
-```
-
-Open:
+Current local URL:
 
 ```text
 http://localhost:8081
 ```
 
+## Start Local Jenkins
+
+```powershell
+cd D:/PSU/Jenkins
+docker compose up -d --build
+```
+
 Get initial password:
 
 ```powershell
-docker exec -it logs-dashboard-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+docker exec -it jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
-Then:
+Then create a Pipeline job pointing to this repository and `Jenkinsfile`.
 
-1. Install suggested plugins.
-2. Create admin user.
-3. Create a Pipeline job.
-4. Point the job to this repository and `Jenkinsfile`.
-
-## First Pipeline Job
-
-In Jenkins:
+## Recommended Job
 
 ```text
-New Item
-  → logs-dashboard-ci
-  → Pipeline
-```
-
-Recommended setup:
-
-```text
+New Item -> logs-dashboard-ci -> Pipeline
 Definition: Pipeline script from SCM
 SCM: Git
 Repository URL: <your repo URL>
-Branch: main or your working branch
+Branch: main or working branch
 Script Path: Jenkinsfile
 ```
 
-If the repository is not pushed to Git yet, use a temporary pipeline script and run local shell checks manually.
-
 ## Pipeline Stages
 
-The current `Jenkinsfile` has these stages:
-
-| Stage | Purpose |
-|---|---|
-| Checkout | Clone code. |
-| Workspace Info | Print branch/commit and workspace files. |
-| Backend Unit and API Tests | Run pytest backend suite. |
-| UI Tests | Run Playwright login UI test. |
-| Compose Config Checks | Validate central and edge compose configuration. |
-| Security Checks | Run Gitleaks/Trivy if installed. |
+- Checkout.
+- Workspace Info.
+- Backend Unit and API Tests.
+- UI Tests.
+- Compose Config Checks.
+- Security Checks.
 
 ## Common Problems
 
-### Docker is not running
+### Jenkins is not running
 
-Symptom:
+Start it from `D:/PSU/Jenkins` and re-check port `8081`.
 
-```text
-failed to connect to the docker API
-```
+### Docker socket dependency
 
-Fix:
-
-- Start Docker Desktop.
-- Re-run the Jenkins compose command.
-
-Note:
-
-The Jenkins CI v1 pipeline validates Compose files with standalone `docker-compose`, so the pipeline itself does not need Docker socket access.
-
-### Docker config permission warning
-
-Symptom:
-
-```text
-Error loading config file: C:\\Users\\...\\.docker\\config.json: Access is denied
-```
-
-Fix:
-
-- For local checks, start Docker Desktop normally.
-- If using Jenkins in Docker, avoid relying on host user Docker config.
+CI v1 should avoid Docker host control. Compose config validation does not require deploy access. Add Docker socket only for a later build/deploy phase with explicit approval.
 
 ### Python or Node missing
 
-The local Jenkins image in `ci/jenkins/Dockerfile` installs:
-
-- Python 3
-- pip
-- venv
-- Node.js
-- npm
-- standalone Docker Compose v2 binary
-
-Rebuild Jenkins image if dependencies are missing:
-
-```powershell
-docker compose -f ci/jenkins/docker-compose.yml up -d --build
-```
-
-### Jenkins image build looks frozen
-
-Symptom:
-
-```text
-docker build runs for a long time with little useful output
-```
-
-Most common cause:
-
-- Docker is sending a huge build context.
-- Local folders such as `.venv/`, `node_modules/`, `reports/`, or Playwright artifacts are not ignored.
-
-Fix:
-
-- Keep the root `.dockerignore` file.
-- Re-run the Jenkins compose build.
+Rebuild the Jenkins image from `D:/PSU/Jenkins`. The Dockerfile installs Python, Node, npm, and standalone Docker Compose.
 
 ### UI test downloads Chromium slowly
 
-The first Playwright run downloads Chromium.
-
-The Jenkins image stores it under:
+The image sets:
 
 ```text
-/var/jenkins_home/.cache/ms-playwright
+PLAYWRIGHT_BROWSERS_PATH=/var/jenkins_home/.cache/ms-playwright
 ```
 
-Because Jenkins home is a Docker volume, later runs should reuse the browser cache.
-
-If Docker Desktop restarts during the first download, start Docker again and rerun the same pipeline. It is safe to retry.
+The Jenkins home volume keeps the browser cache between runs.
 
 ## What Not To Do Yet
 
-Do not deploy from Jenkins until tests are stable.
-
-Initial Jenkins scope:
-
-- test
-- validate config
-- scan security
-
-Later scope:
-
-- build image
-- push registry
-- deploy central stack
+Do not deploy from Jenkins until test and scanner evidence are stable.

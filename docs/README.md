@@ -7,9 +7,14 @@ This documentation tracks the evolution from centralized log dashboard to self-h
 1. `project-charter.md`
 2. `project-structure.md`
 3. `architecture/central-edge-platform.md`
+4. `domain-language.md`
 4. `architecture/service-identity.md`
 5. `workflows/project-development-loop.md`
 6. `roadmap/2-month-milestones.md`
+
+## Domain Language
+
+- `domain-language.md`
 
 ## Repository Organization
 
@@ -20,6 +25,7 @@ This documentation tracks the evolution from centralized log dashboard to self-h
 ## Architecture
 
 - `architecture/central-edge-platform.md`
+- `architecture/monitoring-investigation-cockpit.md`
 - `architecture/service-identity.md`
 
 ## Decisions
@@ -32,10 +38,12 @@ Architecture Decision Records explain why important technical choices were made.
 
 - `deployment/install-central.md`
 - `deployment/install-edge.md`
+- `deployment/install-monitoring-platform.md`
 
 ## CI/CD
 
 - `ci/jenkins-from-zero.md`
+- `ci/jenkins.md`
 - `ci/pipeline-design.md`
 
 ## Testing
@@ -50,4 +58,3 @@ Architecture Decision Records explain why important technical choices were made.
 ## Workflows
 
 - `workflows/project-development-loop.md`
-- `workflows/bmad-usage.md`

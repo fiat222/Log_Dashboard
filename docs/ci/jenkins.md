@@ -1,64 +1,54 @@
 # Jenkins workflow
 
-This project keeps Jenkins as a learning-friendly CI runner for the centralized
-observability platform. The pipeline is intentionally simple: checkout, backend
-tests, UI tests, compose validation, then security checks.
+Jenkins is a separate local CI server for this project. It is not part of the application runtime stack.
 
-## Start Jenkins
+## Current Location
 
-From the repository root:
-
-```powershell
-docker compose -f ci/jenkins/docker-compose.yml up -d
+```text
+D:/PSU/Jenkins
 ```
 
-Open Jenkins at:
+The running container is named `jenkins` and is served at:
 
 ```text
 http://localhost:8081
 ```
 
-## Local manual check inside the Jenkins container
+## Start Jenkins
 
-The Jenkins compose file mounts this repository at `/workspace`, so you can run
-the same CI scripts without starting extra containers:
+From `D:/PSU/Jenkins`:
 
 ```powershell
-docker exec -it logs-dashboard-jenkins sh
-cd /workspace
-sh ci/scripts/run-backend-tests.sh
-sh ci/scripts/run-ui-tests.sh
-sh ci/scripts/check-compose.sh
-sh ci/scripts/security-checks.sh
+docker compose up -d --build
 ```
 
-## Pipeline stages
+Check it from any shell:
 
-1. `Backend Unit and API Tests`
-   - Creates `.venv`
-   - Installs `backend/requirements-dev.txt`
-   - Runs `pytest tests/backend`
-   - Writes `reports/backend-pytest.xml`
+```powershell
+docker ps -a --filter name=jenkins
+```
 
-2. `UI Tests`
-   - Runs `npm ci` or `npm install`
-   - Installs Chromium for Playwright if missing
-   - Runs `npm run test:ui`
+Get first setup password:
 
-3. `Compose Config Checks`
-   - Validates central compose config
-   - Validates edge compose config
-   - Does not start the stack
+```powershell
+docker exec -it jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+```
 
-4. `Security Checks`
-   - Runs `gitleaks` if available
-   - Runs `trivy fs` if available
-   - Skips tools that are not installed yet
+## Pipeline Scope
 
-## Notes
+Current Jenkins scope is evidence and repeatability only:
 
-- Jenkins is not required for normal app runtime.
-- The main observability stack should still be run from the root
-  `docker-compose.yml`.
-- For this project phase, Jenkins is used to make testing repeatable and easy to
-  demonstrate during cooperative education review.
+1. Backend tests.
+2. UI tests.
+3. Compose config checks.
+4. Security checks when tools are available.
+
+Do not deploy from Jenkins yet. Do not add image push or production deployment until tests and scanner evidence are stable.
+
+## Repository Job
+
+Use a Pipeline job that points to this repository and `Jenkinsfile`. The `Jenkinsfile` still lives in the Log Dashboard repo, while the Jenkins server files live in `D:/PSU/Jenkins`.
+
+## Docker Socket Rule
+
+CI v1 should not need Docker host control. It can run tests and validate compose files without deploying. If a later stage needs Docker builds, use a restricted agent or make the Docker socket mount an explicit, documented exception.

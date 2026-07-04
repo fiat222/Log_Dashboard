@@ -4,6 +4,14 @@
 
 This plan keeps cleanup safe. The repository contains active runtime files, internship-era reference material, and new platform files. Some old folders may still contain useful configuration or report evidence.
 
+The goal is no longer just "document the messy root." The goal is a production-style repository layout with clear ownership:
+
+- application code under `apps/`,
+- runtime infrastructure under `infra/`,
+- release automation under `deploy/`,
+- development and CI helpers under `tools/`,
+- reviewed legacy/reference material under `archive/`.
+
 ## Cleanup Policy
 
 Do not delete first.
@@ -23,16 +31,17 @@ candidate   = review before archive/delete
 ### Active
 
 ```text
-backend/
-dashboard/
-clickhouse/
-otel/
-backup/
+apps/api/
+apps/web/
+infra/clickhouse/
+infra/otel/
+infra/vector/
+apps/backup/
 docker-compose.yml
 .env.example
-deploy.sh
-deploy-registry.ps1
-promote.ps1
+deploy/deploy.sh
+deploy/deploy-registry.ps1
+deploy/promote.ps1
 ```
 
 ### New Platform Direction
@@ -50,16 +59,18 @@ pytest.ini
 ### Reference / Internship Material
 
 ```text
-Chores/
-grafana/
-prometheus/
-alertmanager/
-traefik/
-k6/
-restore_backup.md
-recommendation.md
-examine.md
-docusuarus-base.md
+archive/internship/Chores/
+archive/legacy/grafana/
+archive/legacy/prometheus/
+archive/legacy/alertmanager/
+archive/legacy/traefik/
+archive/legacy/k6/
+docs/deployment/restore-backup.md
+docs/notes/recommendation.md
+docs/notes/examine.md
+docs/notes/docusuarus-base.md
+archive/legacy/grafana/grafana-link-dashboard.json
+archive/reference/FileBeat.zip
 ```
 
 ### Local-Only / Ignored
@@ -74,11 +85,36 @@ docusuarus-base.md
 
 ## Safe Cleanup Steps
 
-### Step 1: Document
+### R0: Document Target Layout
 
-Create or update docs before moving anything.
+Create or update docs before moving anything. This prevents blind path churn.
 
-### Step 2: Add Tests
+Status: started. The initial scaffold now exists at `apps/`, `infra/`, `deploy/`, `tools/`, and `archive/`.
+
+### R1: Move Low-Risk Non-Runtime Material
+
+Move only files that do not affect the running stack:
+
+```text
+root markdown notes -> docs/notes/ or archive/
+CI helper scripts  -> tools/ci/ or docs/ci/
+load-test helpers   -> tools/load/ or tests/load/
+generated reports   -> archive/generated/reports/
+```
+
+Do not move `apps/api/`, `apps/web/`, or root `docker-compose.yml` in this step. `clickhouse/`, `otel/`, and `vector/` have moved to `infra/`.
+
+Completed R1 moves so far:
+
+- `docusuarus-base.md` -> `docs/notes/docusuarus-base.md`
+- `grafana-link-dashboard.json` -> `archive/legacy/grafana/grafana-link-dashboard.json`
+- `FileBeat.zip` -> `archive/reference/FileBeat.zip`
+- `recommendation.md` -> `docs/notes/recommendation.md`
+- `examine.md` -> `docs/notes/examine.md`
+- `restore_backup.md` -> `docs/deployment/restore-backup.md`
+- local machine artifacts -> `archive/local/`
+
+### R2: Add Tests
 
 Make sure smoke tests exist for:
 
@@ -87,7 +123,7 @@ Make sure smoke tests exist for:
 - Login UI.
 - Compose config.
 
-### Step 3: Archive Reference Material
+### R3: Archive Reference Material
 
 After review, move old material into a clear archive path such as:
 
@@ -97,16 +133,41 @@ archive/internship/
 
 Only do this after confirming no compose/config path depends on it.
 
-### Step 4: Migrate Central Stack
+### R4: Migrate App Source
 
-Move root compose into `central/` only after:
+Move app source only with matching path updates:
 
-- `docker compose config` passes.
-- paths are updated.
-- install docs are updated.
-- smoke tests pass.
+```text
+apps/api/   -> apps/api/
+apps/web/ -> apps/web/
+```
 
-### Step 5: Remove Dead Files
+Required checks:
+
+- backend unit/API tests pass,
+- frontend asset tests pass,
+- Dockerfiles and compose build contexts are updated,
+- docs and README path references are updated.
+
+### R5: Migrate Infra
+
+Move runtime infrastructure only after app source migration is stable:
+
+```text
+infra/clickhouse/ <- moved from clickhouse/
+infra/otel/       <- moved from otel/
+infra/vector/     <- moved from vector/
+```
+
+Move root compose into `infra/compose/` or `central/` only after:
+
+- `docker compose config` passes,
+- paths are updated,
+- install docs are updated,
+- smoke tests pass,
+- root compatibility command remains documented.
+
+### R6: Remove Dead Files
 
 Delete only when:
 
@@ -116,12 +177,12 @@ Delete only when:
 
 ## Current Recommendation
 
-For now, keep files in place and use documentation/indexing to make the repository understandable.
+Start with R0 and R1 before Phase 6.1 implementation.
 
-The next real code cleanup should focus on splitting large modules, especially:
+The next real code cleanup should then focus on splitting large modules, especially:
 
-- `backend/main.py`
-- `dashboard/app.js`
+- `apps/api/main.py`
+- `apps/web/app.js`
 
 Do that through small vertical slices, not one large rewrite.
 

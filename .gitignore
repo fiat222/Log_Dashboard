@@ -1,9 +1,9 @@
-# Environments
+﻿# Environments
 .env
 .env.local
 .env.*.local
 
-# Python (Log Ingester)
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -29,7 +29,7 @@ venv/
 .venv/
 ENV/
 
-# Docker Local Data / Volumes (ถ้ามีการ mount data ออกมาไว้ข้างนอก)
+# Docker local data / mounted volumes
 data/
 logs/
 clickhouse_data/
@@ -47,7 +47,7 @@ grafana_data/
 ehthumbs.db
 Thumbs.db
 
-# IDEs and Editors
+# IDEs and editors
 .idea/
 .vscode/
 *.swp
@@ -56,44 +56,62 @@ Thumbs.db
 .project
 .settings/
 
-# document
+# Local documents and session files
 log_pipeline_project.docx
-
-context.md
+/context.md
 CLAUDE.md
-Recommendation.md
-examine.md
+/Recommendation.md
+/examine.md
 .antigravity/
 restore_backup/
 PMM/grafana.ini
 .claude/
 .superpowers/
-# Internship Project related
-Chores/Miniproject
-Chores/FileBeat
-grafana_link-dashboard.json
-Chores/PMM/
-Chores/OTel/
-Chores/cadvisor/
-Chores/JumpServer/
-alertmanager/
-k6/
-grafana/
-otel/agent-config.yaml
-prometheus/
-traefik/
-migration.sql
-restore_backup.md
-promote.ps1
-cookies.txt
-daemon.json
 .codex/
 .agents/
+.cookies.txt
+/daemon.json
+
+# Old root-level internship/project artifacts
+/Chores/Miniproject
+/Chores/FileBeat
+/Chores/PMM/
+/Chores/OTel/
+/Chores/cadvisor/
+/Chores/JumpServer/
+/alertmanager/
+/k6/
+/grafana/
+/otel/agent-config.yaml
+/prometheus/
+/traefik/
+/migration.sql
+/restore_backup.md
+/promote.ps1
+grafana_link-dashboard.json
+
+# Generated reports and frontend dependencies
 .graphify_*
 graphify-out/
-reports/
+/reports/
 node_modules/
-test-results/
+/test-results/
 playwright-report/
-
 tmp_*.txt
+
+# Local archived notes and machine artifacts
+archive/local/
+
+# Archived local/reference material kept out of normal status
+archive/generated/
+archive/internship/Chores/FileBeat/
+archive/internship/Chores/JumpServer/
+archive/internship/Chores/Miniproject/
+archive/internship/Chores/OTel/
+archive/internship/Chores/PMM/
+archive/internship/Chores/cadvisor/
+archive/legacy/alertmanager/
+archive/legacy/grafana/
+archive/legacy/prometheus/
+archive/legacy/traefik/
+archive/legacy/k6/

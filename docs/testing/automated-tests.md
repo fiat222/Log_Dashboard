@@ -6,7 +6,7 @@ The project should have automated tests for three layers:
 
 - Unit tests for pure logic.
 - API tests for FastAPI public behavior.
-- UI tests for dashboard/login behavior.
+- UI tests for apps/web/login behavior.
 
 The first target is a reliable smoke suite that can run in CI before deeper integration tests are added.
 
@@ -20,7 +20,7 @@ Purpose:
 Command:
 
 ```powershell
-python -m pytest tests/backend/unit
+python -m pytest tests/apps/api/unit
 ```
 
 Current coverage:
@@ -38,7 +38,7 @@ Purpose:
 Command:
 
 ```powershell
-python -m pytest tests/backend/api
+python -m pytest tests/apps/api/api
 ```
 
 Current coverage:
@@ -69,20 +69,31 @@ npm run test:ui
 
 Current coverage:
 
-- Login page shows SSO path.
-- Admin login panel can be opened.
-- Username/password fields are visible.
+- Login page exposes the standard username/password sign-in flow.
+- Legacy SSO and "Login as Admin" shortcuts stay absent.
+- Normal UI text does not regress into obvious mojibake placeholders.
 
 ## CI Target
 
 CI and local smoke runs should use the same scripts:
 
+These helper scripts now handle the common Jenkins/Linux path and the local Windows Git Bash style path for Python and npm resolution.
+
 ```bash
-sh ci/scripts/run-backend-tests.sh
-sh ci/scripts/run-ui-tests.sh
-sh ci/scripts/check-compose.sh
-sh ci/scripts/security-checks.sh
+sh tools/ci/scripts/run-backend-tests.sh
+sh tools/ci/scripts/run-ui-tests.sh
+sh tools/ci/scripts/check-compose.sh
+sh tools/ci/scripts/security-checks.sh
 ```
+
+Expected CI artifacts now include:
+
+- `reports/backend-pytest.xml`
+- `reports/ui-playwright.xml`
+- `reports/compose-central.yml`
+- `reports/compose-edge.yml`
+- `reports/compose-check.txt`
+- `reports/security-checks.txt`
 
 ## Testing Roadmap
 

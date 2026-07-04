@@ -2,7 +2,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from backend.routers.observability import create_observability_router
+from apps.api.routers.observability import create_observability_router
 
 
 @pytest.mark.asyncio

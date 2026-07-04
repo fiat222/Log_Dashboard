@@ -1,4 +1,4 @@
-from backend.identity import build_service_identity
+from apps.api.identity import build_service_identity
 
 
 def test_builds_stable_service_key_from_compose_metadata():

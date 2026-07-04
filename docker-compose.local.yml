@@ -37,9 +37,9 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - ./clickhouse/config.d/timezone.xml:/etc/clickhouse-server/config.d/timezone.xml:ro
-      - ./clickhouse/config.d/async_insert.xml:/etc/clickhouse-server/config.d/async_insert.xml:ro
+      - ./infra/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./infra/clickhouse/config.d/timezone.xml:/etc/clickhouse-server/config.d/timezone.xml:ro
+      - ./infra/clickhouse/config.d/async_insert.xml:/etc/clickhouse-server/config.d/async_insert.xml:ro
       - clickhouse_backups:/var/lib/clickhouse/backups
 
   vector-containers:

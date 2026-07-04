@@ -34,7 +34,7 @@ pipeline {
 
     stage('Backend Unit and API Tests') {
       steps {
-        sh 'sh ci/scripts/run-backend-tests.sh'
+        sh 'sh tools/ci/scripts/run-backend-tests.sh'
       }
       post {
         always {
@@ -45,26 +45,31 @@ pipeline {
 
     stage('UI Tests') {
       steps {
-        sh 'sh ci/scripts/run-ui-tests.sh'
+        sh 'sh tools/ci/scripts/run-ui-tests.sh'
+      }
+      post {
+        always {
+          junit allowEmptyResults: true, testResults: 'reports/ui-playwright.xml'
+        }
       }
     }
 
     stage('Compose Config Checks') {
       steps {
-        sh 'sh ci/scripts/check-compose.sh'
+        sh 'sh tools/ci/scripts/check-compose.sh'
       }
     }
 
     stage('Security Checks') {
       steps {
-        sh 'sh ci/scripts/security-checks.sh'
+        sh 'sh tools/ci/scripts/security-checks.sh'
       }
     }
   }
 
   post {
     always {
-      archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/**/*.xml'
+      archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/**'
     }
     success {
       echo 'CI pipeline passed.'

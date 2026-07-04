@@ -1,49 +1,40 @@
-# Central Stack
+﻿# Central Stack
 
-This folder is the target home for the central platform stack.
+This folder documents the central platform stack while the working Compose entrypoint remains at the repository root.
 
-The current working central stack still lives at the repository root as:
+## Current State
 
-- `docker-compose.yml`
-- `.env.example`
-- `clickhouse/`
-- `otel/`
-- `backend/`
-- `dashboard/`
-- `backup/`
-
-Do not move the working compose file until the migration plan is tested.
-
-## Goal
-
-The central stack should eventually provide:
-
-- Dashboard Web
-- Backend API
-- ClickHouse
-- PostgreSQL
-- Redis
-- OTel Gateway
-- Prometheus
-- Optional Tempo
-- Optional CI/security profiles
-
-## Migration Plan
-
-1. Keep root `docker-compose.yml` as the working stack.
-2. Add central/edge documentation and environment examples.
-3. Add edge collector stack and test external ingestion.
-4. Add compose profiles to the existing root stack.
-5. Move or mirror the central compose into this folder after smoke tests pass.
-
-## Current Install Path
-
-Use the root stack for now:
+The active central stack is still started from:
 
 ```powershell
-Copy-Item .env.example .env
 docker compose up -d
 ```
 
-See `docs/deployment/install-central.md` for the professional install flow.
+Runtime source and config now live in production-style folders:
 
+```text
+apps/api/              FastAPI backend
+apps/web/              dashboard SPA and Nginx template
+apps/backup/           ClickHouse backup worker
+infra/clickhouse/      ClickHouse schema and server config
+infra/otel/            OTel collector configs
+infra/vector/          Vector central collector config
+docker-compose.yml     root compatibility entrypoint
+```
+
+## Goal
+
+The central stack should provide:
+
+- Dashboard web UI.
+- Backend API.
+- ClickHouse, PostgreSQL, and Redis.
+- OTel Gateway.
+- Central Vector collector.
+- Optional monitoring/security profiles when they can be demonstrated.
+
+## Migration Rule
+
+Do not move `docker-compose.yml` out of the root until install docs, CI, and smoke checks all use the new path. The root command is the supported operator path for now.
+
+See `docs/deployment/install-central.md` for installation details.

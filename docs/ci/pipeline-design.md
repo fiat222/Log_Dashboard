@@ -12,7 +12,7 @@ Version 1 validates the project:
 Backend tests
 UI tests
 Compose config
-Security scan placeholder
+Security checks with explicit unavailable markers
 ```
 
 It does not deploy.
@@ -24,7 +24,7 @@ It does not deploy.
 Command:
 
 ```bash
-sh ci/scripts/run-backend-tests.sh
+sh tools/ci/scripts/run-backend-tests.sh
 ```
 
 Purpose:
@@ -37,20 +37,21 @@ Purpose:
 Command:
 
 ```bash
-sh ci/scripts/run-ui-tests.sh
+sh tools/ci/scripts/run-ui-tests.sh
 ```
 
 Purpose:
 
 - Verify browser-visible login flow.
 - Prepare for dashboard navigation tests later.
+- Emit `reports/ui-playwright.xml` for Jenkins test evidence.
 
 ### Compose Config Checks
 
 Command:
 
 ```bash
-sh ci/scripts/check-compose.sh
+sh tools/ci/scripts/check-compose.sh
 ```
 
 Purpose:
@@ -58,21 +59,23 @@ Purpose:
 - Catch invalid YAML.
 - Catch missing environment variables.
 - Validate central and edge install surfaces.
+- Save rendered configs under `reports/` for archiveable CI evidence.
 
 ### Security Checks
 
 Current behavior:
 
-- Run `ci/scripts/security-checks.sh`.
+- Run `tools/ci/scripts/security-checks.sh`.
 - Run Gitleaks if installed.
 - Run Trivy if installed.
 - Skip with clear message if unavailable in the local learning image.
+- Save the result to `reports/security-checks.txt` so the absence is explicit in CI artifacts.
 
 Later improvement:
 
 - Install Gitleaks and Trivy in Jenkins image.
-- Make scans blocking.
-- Archive reports.
+- Make scans blocking for all CI environments.
+- Promote text output to SARIF or JSON when scanners are installed in Jenkins.
 
 ## Future Pipeline Versions
 
@@ -99,10 +102,11 @@ Add:
 - deploy script.
 - approval gate.
 - rollback notes.
+- explicit Docker host access design if builds/deploys require it.
 
 ## Security Note
 
-The local Jenkins CI v1 setup does not mount Docker socket.
+Jenkins runs outside this repo from `D:/PSU/Jenkins`. CI v1 should not mount the Docker socket.
 
 This keeps the first CI demo safer. It validates Compose files but does not build, run, or deploy containers.
 

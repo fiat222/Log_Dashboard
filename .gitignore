@@ -1,4 +1,4 @@
-﻿# Environments
+# Environments
 .env
 .env.local
 .env.*.local
@@ -115,3 +115,10 @@ archive/legacy/grafana/
 archive/legacy/prometheus/
 archive/legacy/traefik/
 archive/legacy/k6/
+
+# Local AI helper artifacts
+/skills/
+/grill-with-docs.cmd
+/tools/dev/scripts/grill-with-docs.ps1
+/docs/notes/recommendation.md
+/docs/notes/examine.md

@@ -117,6 +117,7 @@ archive/legacy/traefik/
 archive/legacy/k6/
 
 # Local AI helper artifacts
+/AGENTS.md
 /skills/
 /grill-with-docs.cmd
 /tools/dev/scripts/grill-with-docs.ps1
